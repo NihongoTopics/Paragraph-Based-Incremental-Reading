@@ -867,8 +867,6 @@ def _sync_menu() -> None:
         _actions[key].setEnabled(back or (key == "enum" and card == "enum:a" and not editing))
     _actions["enum"].setText("Recreate Enumeration" if card.startswith("enum:") else "Enumeration")
     _actions["qa_edit"].setEnabled(qa_card)
-    # Create の項目がどれも使えないときは Create を灰色にする
-    _show_submenu("create", any(_actions[k].isEnabled() for k in _CREATE_KEYS + ("qa_edit",)))
     for key in _FONT_KEYS + ("extract",):
         _actions[key].setEnabled(front)
     _actions["merge_prev"].setEnabled(front and _state["prev"])
@@ -879,19 +877,6 @@ def _sync_menu() -> None:
     _actions["open_original"].setEnabled(bool(_doc_file(note, orig=True)))
     _actions["open_current"].setEnabled(bool(_doc_file(note, orig=False)))
     _actions["edit_source"].setEnabled(bool(_doc_file(note, orig=False)))
-    _show_submenu("move_doc", note is not None)
-
-
-def _show_submenu(key: str, ok: bool) -> None:
-    """下位メニュー key を、使えるときは出し、使えないときは隠して同じ名前の灰色の普通の項目（key_off）を出す。
-
-    macOS のメニューバーでは、下位メニューを持つ項目は無効にしても灰色にならない（Qt 6.11.0 の qcocoamenu.mm の
-    setAttachedItem: 下位メニューの項目は NSMenuValidation に加わらず、enabled = hasSubmenu。無効にすると中の項目だけが
-    灰色になる。実機のデッキ一覧で見つかった）。
-    """
-    _actions[key].setEnabled(ok)
-    _actions[key].setVisible(ok)
-    _actions[key + "_off"].setVisible(not ok)
 
 
 def _current_ir_note():
@@ -1020,7 +1005,7 @@ def _fill_move_menu() -> None:
     """
     docid = _docid(_current_ir_note())
     if not docid:
-        _fill_deck_menu(_move_menu, set(), None)
+        _fill_deck_menu(_move_menu, set(), None)  # 移す文書が無い。デッキは灰色で出す
         return
     _fill_deck_menu(_move_menu, core.doc_decks(mw.col, docid),
                     lambda did, name: move_document(docid, did, name))
@@ -1029,7 +1014,7 @@ def _fill_move_menu() -> None:
 def _fill_deck_menu(menu, checked: set, on_pick) -> None:
     """menu をデッキの一覧で作り直す。PBIR → Move Document と取り込みダイアログの Deck で使う。
 
-    on_pick(deck_id, name) は項目を選んだときに呼ぶ。None なら menu を空にするだけ。
+    on_pick(deck_id, name) は項目を選んだときに呼ぶ。None ならデッキの項目を灰色にする（下位メニューは開ける）。
     一覧は Anki の Change Deck と同じく、フィルターデッキを除き、空の Default を除く
     （26.09.2 の studydeck.pyc の all_names_and_ids(include_filtered=..., skip_empty_default=True)）。
     フィルターデッキには Anki がカードを移させない（FilteredDeckError）。
@@ -1041,8 +1026,6 @@ def _fill_deck_menu(menu, checked: set, on_pick) -> None:
     for m in menu.findChildren(QMenu):
         m.deleteLater()
     menu.clear()
-    if on_pick is None:
-        return
     decks = mw.col.decks.all_names_and_ids(include_filtered=False, skip_empty_default=True)
     parents = {d.name.rpartition("::")[0] for d in decks}  # 下位のデッキを持つデッキの名前
     on_path = set()  # チェックの付くデッキと、その上の階層の名前
@@ -1069,7 +1052,9 @@ def _fill_deck_menu(menu, checked: set, on_pick) -> None:
         act.setMenuRole(QAction.MenuRole.NoRole)
         act.setCheckable(True)
         act.setChecked(d.id in checked)
-        act.triggered.connect(lambda _=False, did=d.id, name=d.name: on_pick(did, name))
+        act.setEnabled(on_pick is not None)
+        if on_pick is not None:
+            act.triggered.connect(lambda _=False, did=d.id, name=d.name: on_pick(did, name))
         where.addAction(act)
         if d.name in parents:
             where.addSeparator()
@@ -1192,19 +1177,13 @@ def _add(menu, key: str, label: str, handler, checkable: bool = False):
     return act
 
 
-def _add_submenu(menu, key: str, title: str):
-    """下位メニューと、使えないときに代わりに出す灰色の普通の項目（_show_submenu）を足す。"""
-    sub = menu.addMenu(title)
-    _actions[key] = sub.menuAction()
-    _add(menu, key + "_off", title, lambda: None).setEnabled(False)
-    return sub
-
-
 def setup_menu() -> None:
     global _menu, _move_menu
     menu = QMenu("PBIR", mw)
     _add(menu, "source_text", "Source Text", _toggle_source_text, checkable=True)
-    create = _add_submenu(menu, "create", "Create")
+    # 下位メニューは、中の項目がどれも使えないときも開けるようにしておく（Apple の HIG の Menus: 中に何があるかを見られるように）。
+    # 灰色にするのは中の項目だけ
+    create = menu.addMenu("Create")
     # Cloze は、選択範囲の文字がすべて cloze の箇所にあるとチェックが付き、選ぶとその cloze を外す（Font → Highlight と同じ）
     _add(create, "cloze", "Cloze", lambda _checked: _font_cmd("cloze"), checkable=True)
     for key, label in [(k, v[1]) for k, v in core.DERIVED.items()]:
@@ -1223,7 +1202,7 @@ def setup_menu() -> None:
     _add(opendoc, "open_current", "Current", lambda: open_document(orig=False))
     moddoc = menu.addMenu("Modify Document")
     _add(moddoc, "edit_source", "Add/Edit Source", edit_source)
-    _move_menu = _add_submenu(menu, "move_doc", "Move Document")
+    _move_menu = menu.addMenu("Move Document")
     _move_menu.aboutToShow.connect(_fill_move_menu)
     _add(menu, "new_deck", "New Deck", new_deck)
     _add(menu, "import", "Import ...", on_import)
