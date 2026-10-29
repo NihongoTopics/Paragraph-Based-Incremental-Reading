@@ -1,0 +1,65 @@
+/* カードの CSS（core._css）。ノートタイプの CSS と、取り込みのプレビューに使う。
+   薄くするのは data-ir の有無に依存させない。文書全体を薄い色にし、対象（.ir-focus）とその子孫だけを通常色に戻す。
+   色は継承するので、id の付かない要素、入れ子、裸のテキストノードもまとめて薄くなる。
+   優先度: "#ir-doc *" は (1,0,0)、"#ir-doc .ir-focus *" は (1,1,0) で後者が勝つ。
+   夜間モードは変数だけ差し替えるので優先度が衝突しない。 */
+/* 両端揃え。記事が要素に書いた text-align はこれより強いので、そのまま出る */
+.card { font-family: sans-serif; font-size: 17px; text-align: justify;
+        max-width: 46em; margin: 0 auto; }
+/* 見出しは両端揃えにしない。start は左から右の文では左 */
+#ir-doc :is(h1, h2, h3, h4, h5, h6) { text-align: start; }
+#ir-doc { --ir-fg: #111111; --ir-dim: #9b9b9b; --ir-mark: #ffe08a;
+        --ir-cloze: #cfe6ff; }
+.night_mode #ir-doc { --ir-fg: #e9e9e9; --ir-dim: #6a6a6a; --ir-mark: #7a6420;
+        --ir-cloze: #1f4e70; }
+
+#ir-doc, #ir-doc * { color: var(--ir-dim); transition: color .15s; }
+/* 記事が要素に直接書いた色（style="color:white" など）は上の規則より強いので、対象とその隣の
+   外では !important で薄くする。対象の中では記事の色をそのまま出す。取り込みのプレビューは薄くしない */
+#ir-doc:not(.ir-preview) :not(.ir-focus):not(.ir-focus *):not(.ir-near):not(.ir-near *) {
+        color: var(--ir-dim) !important; }
+#ir-doc .ir-focus, #ir-doc .ir-focus * { color: var(--ir-fg); }
+/* 対象の真隣にある、カード生成の対象外の要素は薄くしない */
+#ir-doc .ir-near, #ir-doc .ir-near * { color: var(--ir-fg); }
+
+#ir-doc img, #ir-doc svg, #ir-doc canvas, #ir-doc video { opacity: .3; }
+#ir-doc .ir-focus img, #ir-doc .ir-focus svg, #ir-doc .ir-focus canvas,
+#ir-doc .ir-focus video,
+#ir-doc .ir-near img, #ir-doc .ir-near svg, #ir-doc .ir-near canvas,
+#ir-doc .ir-near video { opacity: 1; }
+
+/* .cloze は Anki が描画した cloze（cloze カードと Enumeration）。data-cloze は問題面の span にしか付かないので、
+   回答面にも色が付くように class で選ぶ */
+#ir-doc mark, #ir-doc [data-cloze], #ir-doc .cloze { background: transparent; border-radius: 2px; }
+#ir-doc .ir-focus mark { background: var(--ir-mark); }
+#ir-doc .ir-focus [data-cloze], #ir-doc .ir-focus .cloze { background: var(--ir-cloze); }
+/* 段落のカードの問題面では cloze のマークに色を付けない（JS が .ir-hide-cloze を付ける）。回答面では付ける */
+#ir-doc.ir-hide-cloze .ir-focus [data-cloze] { background: transparent; }
+/* cloze の語のほかの出現。マークと同じ色。JS が CSS Custom Highlight API で付け、文書には書かない */
+#ir-doc ::highlight(ir-cloze) { background-color: var(--ir-cloze); }
+
+.ir-warn { margin: 0 0 1em; padding: .5em .8em; border-radius: 4px;
+        background: #fde2e1; color: #7a1c16; font-size: 14px; }
+.night_mode .ir-warn { background: #5a2320; color: #f5d0cd; }
+
+/* pre（整形済みの文）は、改行と空白をそのまま残して、長い行は画面の幅で折り返す（2026-10-13）。
+   ブラウザの既定（white-space: pre）では折り返さず、カードの右へはみ出していた。
+   両端揃えにすると折り返した行の空白が伸びるので、左揃えにする */
+#ir-doc pre { white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; }
+/* PBIR → Source Text: 段落の HTML のソースを文字として出す。
+   HTML のソースなので両端揃えにしない */
+#ir-doc .ir-source { white-space: pre-wrap; font-family: Menlo, Consolas, monospace;
+        font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; text-align: left; }
+
+/* quiz（Basic、True or False、Multiple Choice、Enumeration）の問いと答え。段落と見分けられるように、少し大きな字で、行ごとに中央に寄せる。
+   段落の要素の中に入るので、pre の段落でも空白の扱いは普通に戻す */
+.ir-qa { font-size: 1.15em; text-align: center; white-space: normal; margin: .2em 0 .8em; }
+.ir-qa hr { border: 0; border-top: 1px solid currentColor; opacity: .3; margin: .5em 0; }
+/* Create で書いている問いと答え。空でもキャレットを置けるように高さを持たせ、空のときは何の欄かを薄く出す */
+.ir-qa [contenteditable] { min-height: 1.4em; }
+.ir-qa [contenteditable]:empty::before { content: attr(data-placeholder); opacity: .4; }
+/* True or False の回答面（と作るとき）の偽の文。字の大きさと中央寄せは真の文と同じで、色と画像は対象の外の段落と
+   同じ薄さ（#ir-doc *、#ir-doc img など）。対象の中の規則（#ir-doc .ir-focus * など）より強くするため .ir-qa を重ねる */
+#ir-doc .ir-qa .ir-qa-dim, #ir-doc .ir-qa .ir-qa-dim * { color: var(--ir-dim); }
+#ir-doc .ir-qa .ir-qa-dim img, #ir-doc .ir-qa .ir-qa-dim svg, #ir-doc .ir-qa .ir-qa-dim canvas,
+#ir-doc .ir-qa .ir-qa-dim video { opacity: .3; }
