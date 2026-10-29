@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """アドオン Paragraph-Based Incremental Reading の取り込みの規則の写し。pdf-to-ir-html がアドオンの無い環境でも動くように、スキルの中に持つ。
 
-写し元: addon2/ir2/core.py。
-取り込みの正規化とカードの判定（normalize, lift_headings, segment をまとめた prepare_article）、取り込みダイアログのプレビュー（preview_html とカードの
-CSS の _css）、それらが使う定数を、関数と定数の単位でそのまま写した（ast で取り出した。書き換えていない）。
+写し元: addon2/ir2/core.py と addon2/ir2/card.css。
+取り込みの正規化とカードの判定（normalize, lift_headings, segment をまとめた prepare_article）、取り込みダイアログのプレビュー（preview_html）、
+それらが使う定数を、関数と定数の単位でそのまま写した（ast で取り出した。書き換えていない）。カードの CSS の _css は、アドオンでは
+card.css を読む関数なので、card.css の中身を返す関数にした。
 アドオンの取り込みの規則が変わったら、写し直す。
 """
 
@@ -252,21 +253,22 @@ def _is_blank(node) -> bool:
     return isinstance(node, NavigableString) and not node.strip()
 
 
-_MEDIA_TAGS = {"img", "svg", "video", "audio", "canvas", "iframe", "object", "embed", "math"}
+MEDIA_TAGS = {"img", "svg", "video", "audio", "canvas", "iframe", "object", "embed", "math"}
 
 
 def _has_content(el) -> bool:
     """文字か、画像などの要素を持つか。空白と <br> だけなら持たない。"""
-    return bool(el.get_text().strip()) or el.find(lambda t: t.name in _MEDIA_TAGS) is not None
+    return bool(el.get_text().strip()) or el.find(lambda t: t.name in MEDIA_TAGS) is not None
 
 
 def _css() -> str:
-    # ダイミングは data-ir の有無に依存させない。文書全体を薄い色にし、
-    # 対象（.ir-focus）とその子孫だけを通常色に戻す。色は継承するので、
-    # id の付かない要素、入れ子、裸のテキストノードもまとめて薄くなる。
-    # 優先度: "#ir-doc *" は (1,0,0)、"#ir-doc .ir-focus *" は (1,1,0) で後者が勝つ。
-    # 夜間モードは変数だけ差し替えるので優先度が衝突しない。
+    """カードの CSS（addon2/ir2/card.css の中身）。"""
     return """
+/* カードの CSS（core._css）。ノートタイプの CSS と、取り込みのプレビューに使う。
+   薄くするのは data-ir の有無に依存させない。文書全体を薄い色にし、対象（.ir-focus）とその子孫だけを通常色に戻す。
+   色は継承するので、id の付かない要素、入れ子、裸のテキストノードもまとめて薄くなる。
+   優先度: "#ir-doc *" は (1,0,0)、"#ir-doc .ir-focus *" は (1,1,0) で後者が勝つ。
+   夜間モードは変数だけ差し替えるので優先度が衝突しない。 */
 /* 両端揃え。記事が要素に書いた text-align はこれより強いので、そのまま出る */
 .card { font-family: sans-serif; font-size: 17px; text-align: justify;
         max-width: 46em; margin: 0 auto; }
@@ -315,11 +317,11 @@ def _css() -> str:
 #ir-doc .ir-source { white-space: pre-wrap; font-family: Menlo, Consolas, monospace;
         font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; text-align: left; }
 
-/* IR2 Basic の問いと答え。段落と見分けられるように、少し大きな字で、行ごとに中央に寄せる。
+/* quiz（Basic、True or False、Multiple Choice、Enumeration）の問いと答え。段落と見分けられるように、少し大きな字で、行ごとに中央に寄せる。
    段落の要素の中に入るので、pre の段落でも空白の扱いは普通に戻す */
 .ir-qa { font-size: 1.15em; text-align: center; white-space: normal; margin: .2em 0 .8em; }
 .ir-qa hr { border: 0; border-top: 1px solid currentColor; opacity: .3; margin: .5em 0; }
-/* 編集中の問いと答え。空でもキャレットを置けるように高さを持たせ、空のときは何の欄かを薄く出す */
+/* Create で書いている問いと答え。空でもキャレットを置けるように高さを持たせ、空のときは何の欄かを薄く出す */
 .ir-qa [contenteditable] { min-height: 1.4em; }
 .ir-qa [contenteditable]:empty::before { content: attr(data-placeholder); opacity: .4; }
 /* True or False の回答面（と作るとき）の偽の文。字の大きさと中央寄せは真の文と同じで、色と画像は対象の外の段落と

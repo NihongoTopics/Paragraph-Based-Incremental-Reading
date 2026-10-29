@@ -39,7 +39,7 @@
 
 - 数式は TeX で書き、`<tex>` で囲む。本文の中の式は `<tex>x_i</tex>`、別の行に出す式は `<tex display>…</tex>`。
   assemble.py が MathJax（Anki に同梱のものと同じ 3.2.2）で MathML に変える。
-  理由: Anki の MathJax は、カードの JS があとから読み込む文書には効かない（reviewer.js と core._doc_js）。
+  理由: Anki の MathJax は、カードの JS があとから読み込む文書には効かない（reviewer.js と、カードの JS の addon2/ir2/card.js）。
   MathML は QtWebEngine がそのまま描画する。
 - 別の行の式が文の一部なら、その段落の `<p>` の中に書き、式のあとの文（"where x is …"）も同じ `<p>` に続ける。
   新しい段落が式のあとで始まっていれば（字下げなど）、そこで `<p>` を分ける。
