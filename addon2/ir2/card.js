@@ -354,9 +354,12 @@
 
   // 段落の操作（_ir2Cmd）は今の選択に対して働く。選択が段落の外にはみ出していて、その部分に文字が無ければ、段落の中だけの
   // 選択にする（cardRange）。メニューを開いても選択とフォーカスはページに残る（2026-10-22、Anki 26.09.2 で確かめた）
+  // 選択を置き直すのは cardRange が範囲を縮めたときだけ。置き直すと、execCommand('bold') などがキャレットに付けた装飾が
+  // 消えるので、キャレットで Bold をもう一度選んでも外れず、また付いてしまう（2026-10-30、QtWebEngine 6.11.2 で確認）
   function trimSel(target) {
-    var sel = window.getSelection(), r = sel.rangeCount && cardRange(sel.getRangeAt(0), target);
-    if (r) { sel.removeAllRanges(); sel.addRange(r); }
+    var sel = window.getSelection(), range = sel.rangeCount && sel.getRangeAt(0);
+    var r = range && cardRange(range, target);
+    if (r && r !== range) { sel.removeAllRanges(); sel.addRange(r); }
   }
 
   // 選択のうち段落の外にはみ出した部分に文字が無ければ（空白だけで、画像なども無ければ）、段落の中だけの範囲を返す。
