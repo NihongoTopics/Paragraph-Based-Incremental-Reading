@@ -87,12 +87,39 @@
       root.innerHTML = '';
       if (warn) root.appendChild(warn);
       root.appendChild(doc);
-      target.scrollIntoView({block: 'center'});
+      centerTarget(doc, target);
       setupEdit(target);
     }).catch(function (err) {
       // フォールバック表示のまま。黙って落ちると原因が分からないので、理由を画面に出す
       fallbackReason(String(err && err.message || err));
     });
+  }
+
+  // 対象の段落を画面の中央に出し、文書の高さが変わるたびに中央に出し直す（2026-10-31）。
+  // 記事の画像の多くは大きさが書かれておらず、読み込みは中央に出したあとに終わる。Chromium の scroll anchoring は
+  // 画面の上の方にある要素の位置を保つので、その要素と対象の間の画像が読み込まれると対象が下へ押される。
+  // 回答面と cloze、quiz のカードでは、画面の上端と対象の間の画像の高さの分だけ下にずれた（Chromium で確かめた）。
+  // 段落のカードの問題面では、フォーカスのある編集中の段落を Chromium が基準に選ぶので上の画像ではずれないが、
+  // 段落の中の画像が読み込まれると段落が伸び、中央からずれた。
+  // 出し直すのは、利用者が自分で動かす（ホイール、タッチ、キー、クリック）か、PBIR のメニューを使うか、
+  // 次の描画に替わるまで。そのあとは読んでいる位置を動かさない
+  function centerTarget(doc, target) {
+    if (window._ir2StopCenter) window._ir2StopCenter();
+    target.scrollIntoView({block: 'center'});
+    if (!window.ResizeObserver) return;
+    var USER_EVENTS = ['wheel', 'touchstart', 'keydown', 'mousedown'];
+    var ro = new ResizeObserver(function () {
+      if (document.body.contains(target)) target.scrollIntoView({block: 'center'});
+      else stop();
+    });
+    function stop() {
+      ro.disconnect();
+      USER_EVENTS.forEach(function (t) { window.removeEventListener(t, stop, true); });
+      if (window._ir2StopCenter === stop) window._ir2StopCenter = null;
+    }
+    USER_EVENTS.forEach(function (t) { window.addEventListener(t, stop, true); });
+    window._ir2StopCenter = stop;
+    ro.observe(doc);
   }
 
   // 文書を出せずにフィールドだけの表示（フォールバック）になったとき、その理由を上に出す
@@ -147,6 +174,8 @@
     };
     document.addEventListener('selectionchange', window._ir2SelHandler);
     window._ir2Cmd = function (cmd, arg) {
+      // メニューの操作（Create で問いの欄を出すなど）で段落の高さが変わっても、中央に出し直さない（centerTarget）
+      if (window._ir2StopCenter) window._ir2StopCenter();
       if (quiz) return;   // Create → Basic などを開いている間。段落の操作はしない（quiz を作るのはカードを離れるとき）
       if (cmd === 'source') { setSource(target, !!arg); return; }
       // 以下は描画された段落に対する操作。PBIR → Create は回答面だけ、ほかは問題面だけ
