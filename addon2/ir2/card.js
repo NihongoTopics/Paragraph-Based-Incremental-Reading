@@ -259,7 +259,7 @@
     return tpl.innerHTML;
   }
 
-  var FORMATS = ['bold', 'italic', 'subscript', 'superscript'];
+  var FORMATS = ['bold', 'italic', 'underline', 'subscript', 'superscript'];
 
   // Python 側のメニュー（チェックと灰色表示）のための状態通知。段落のカードだけが送る。
   // creating は、Create → Basic などで問いと答えを書いている間
@@ -286,7 +286,7 @@
   // 前に送ったものと同じときは送らない（selectionchange のたびに呼ぶため）。
   var lastFont = null;
   function pushFont(target) {
-    var st = {highlight: false, bold: false, italic: false, subscript: false, superscript: false, cloze: false};
+    var st = {highlight: false, bold: false, italic: false, underline: false, subscript: false, superscript: false, cloze: false};
     var sel = window.getSelection();
     var range = !sourceMode && !quiz && sel.rangeCount && cardRange(sel.getRangeAt(0), target);
     if (range) {
@@ -427,7 +427,7 @@
     return a.join('\u0001');
   }
 
-  // Bold, Italic, Subscript, Superscript。付け外しの判定はブラウザの execCommand に任せる
+  // Bold, Italic, Underline, Subscript, Superscript。付け外しの判定はブラウザの execCommand に任せる
   // （普通のエディタと同じく、全部に付いていれば外し、そうでなければ付ける）。
   // 装飾を外すときにブラウザが祖先の要素を分割することがあり、cloze の span が
   // 二つに割れると id が重複する。そうなったら元に戻して断る。
