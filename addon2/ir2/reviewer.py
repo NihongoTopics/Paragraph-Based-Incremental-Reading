@@ -26,7 +26,7 @@ _draft: dict = {}
 # PBIR → Source Text のチェック。カードが替わっても続く（Anki を閉じるまで）
 _source_text = False
 # PBIR → Font の項目
-_FONT_KEYS = ("highlight", "bold", "italic", "subscript", "superscript")
+_FONT_KEYS = ("bold", "italic", "underline", "highlight", "superscript", "subscript")
 # 選択範囲で決まるチェック。Font の項目と、Create → Cloze（選択範囲の文字がすべて cloze の箇所にあるか）。JS が ir2:font で知らせる
 _CHECK_KEYS = _FONT_KEYS + ("cloze",)
 _font = dict.fromkeys(_CHECK_KEYS, False)
@@ -331,7 +331,7 @@ def setup_menu() -> None:
         _add(create, key, quiz.label, lambda k=key: _run(k))
     font = menu.addMenu("Font")
     # 普通のエディタと同じく、選択範囲に付いている装飾にチェックが付く（_sync_menu）
-    for key, label in zip(_FONT_KEYS, ("Highlight", "Bold", "Italic", "Subscript", "Superscript")):
+    for key, label in zip(_FONT_KEYS, ("Bold", "Italic", "Underline", "Highlight", "Superscript", "Subscript")):
         _add(font, key, label, lambda _checked, k=key: _check_cmd(k), checkable=True)
     _add(menu, "extract", "Extract", lambda: _run("extract"))
     _add(menu, "merge_prev", "Merge Previous", lambda: _run("merge", "prev"))
