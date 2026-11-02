@@ -511,22 +511,22 @@ def store_images(col: Collection, soup, docid: str, fetched: dict, size_of) -> N
     判定から外れる。size_of(中身) が大きさを返せば width と height を付ける（_set_size）。
     書き出せない画像（ダウンロードできなかったもの、壊れた base64）は src が元のまま残る。
 
-    web と埋め込みの画像は、書き出せたかどうかによらず srcset と sizes、入っている <picture> の <source> を外す
-    （Pilcrow と同じ）。ブラウザはそれらと src から候補を 1 つだけ選び、それが読めなくてもほかの候補を試さない
-    （Qt WebEngine 6.11 で確かめた）。外すと、書き出した画像はそのファイルが、書き出せなかった画像は取り込みが
-    試した src が出る。ほかの画像（相対のアドレス、base64 でない data: など）は何も変えない。
+    web の画像と、読める埋め込みの画像は、書き出せたかどうかによらず srcset と sizes、入っている <picture> の <source>
+    を外す（Pilcrow の irPrepare と同じ）。ブラウザはそれらと src から候補を 1 つだけ選び、それが読めなくてもほかの候補を
+    試さない（Qt WebEngine 6.11 で確かめた）。外すと、書き出した画像はそのファイルが、書き出せなかった画像は取り込みが
+    試した src が出る。ほかの画像（相対のアドレス、base64 でない data:、壊れた base64 など）は何も変えない。
     """
     stored: dict[str, tuple] = {}  # 中身のハッシュ → (ファイル名, 大きさ)
     for img in soup.find_all("img"):
         url = web_src(img)
-        if not url and not DATA_URI_RE.match(img.get("src", "").strip()):
+        image = fetched.get(url) or _data_image(img.get("src", ""))
+        if not url and image is None:
             continue
         for a in ("srcset", "sizes"):
             img.attrs.pop(a, None)
         if img.parent is not None and img.parent.name == "picture":
             for source in img.parent.find_all("source", recursive=False):
                 source.decompose()
-        image = fetched.get(url) or _data_image(img["src"])
         if image is None:
             continue
         data, mime = image
