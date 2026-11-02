@@ -22,6 +22,14 @@
 /* 対象の真隣にある、カード生成の対象外の要素は薄くしない */
 #ir-doc .ir-near, #ir-doc .ir-near * { color: var(--ir-fg); }
 
+/* width と height の付いた画像（取り込みが付ける。core._set_size）は、読み込みの前から width と height の比で場所を取り、
+   読み込んだら画像の比で出る（Chromium は 2 つの属性を aspect-ratio にもする）（2026-11-02）。Anki の学習画面の CSS は
+   img を max-width: 100% と max-height: 95vh にする（26.09.3 の reviewer.css）。height: auto が無いと、幅を縮められた画像が
+   属性の高さのまま縦に伸びる。max-width の min() が無いと、高さを 95vh に縮められた縦長の画像が属性の幅のまま横に伸びる
+   （どちらも Qt WebEngine 6.11 で確かめた）。attr() の type() は Chromium 133 から。読めない Chromium では、この max-width は
+   無視されて Anki の 100% になる */
+#ir-doc img[width][height] { height: auto;
+        max-width: min(100%, calc(95vh * attr(width type(<number>)) / attr(height type(<number>)))); }
 #ir-doc img, #ir-doc svg, #ir-doc canvas, #ir-doc video { opacity: .3; }
 #ir-doc .ir-focus img, #ir-doc .ir-focus svg, #ir-doc .ir-focus canvas,
 #ir-doc .ir-focus video,

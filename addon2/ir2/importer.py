@@ -4,14 +4,16 @@
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from aqt import mw
 from aqt.operations import QueryOp
 from aqt.qt import (
-    QDialog, QDialogButtonBox, QEvent, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QObject,
-    QPushButton, QTimer, QUrl, QWebEnginePage, QWebEngineSettings, QWebEngineView, QWidget, Qt,
+    QBuffer, QByteArray, QDialog, QDialogButtonBox, QEvent, QFileDialog, QFormLayout, QHBoxLayout, QImageIOHandler,
+    QImageReader, QIODevice, QLabel, QLineEdit, QMenu, QObject, QPushButton, QTimer, QUrl, QWebEnginePage,
+    QWebEngineSettings, QWebEngineView, QWidget, Qt,
 )
 from aqt.theme import theme_manager
 from aqt.utils import showText, showWarning, tooltip
@@ -206,7 +208,8 @@ class ImportDialog(QDialog):
       - ファイルを外すと（Remove）、URL から読み込んだ文書がプレビューに戻る。
       - ファイルは File の行かプレビューへのドラッグ＆ドロップでも選べる（Choose File ... と同じ扱い。_FileDrop）。
     プレビューは取り込まれる文書全体（カードに分ける前の形。core.prepare_article の結果）。
-    OK で取り込むのはプレビューに出ている文書で、出ていなければ OK は灰色。
+    OK で取り込むのはプレビューに出ている文書で、出ていなければ OK は灰色。文書の画像は media のファイルにする
+    （web の画像はダウンロードしてから。accept と core.store_images）。
     Deck はボタンで、PBIR → Move Document と同じデッキのメニューから選ぶ。初期値は選択中のデッキ。
     URL が取り込み済みの文書の Source と同じなら、URL 欄の下に警告を出す。ファイルの段落が取り込み済みの文書の原本にも
     あれば、File の行の下に警告を出す（どちらも取り込みは止めない）。
@@ -515,21 +518,36 @@ class ImportDialog(QDialog):
     def accept(self) -> None:
         """OK でプレビューに出ている文書を取り込む。Source は URL 欄。閉じるのは成功したときだけ。
 
+        まず文書の web の画像を裏でダウンロードし（fetch_images。その間はダイアログを触れない）、済んだら取り込む（_import）。
         失敗したら警告を出してダイアログを開いたままにし、入力をそのまま直せるようにする。
         """
         if self._ready_html is None:
             return
+        html, deck, source = self._ready_html, self._deck_name, self.url.text().strip()
+        # 画像を頼むときの Referer は記事のページ。ファイルを取り込むときは付けない
+        referer = "" if self._from_file.origin is not None else self._from_url.origin
+        self.setEnabled(False)
+        QueryOp(parent=self, op=lambda _col: fetch_images(core.web_images(html), referer),
+                success=lambda fetched: self._import(html, deck, source, fetched)
+                ).failure(self._failed).without_collection().with_progress(
+                    "Downloading the article's images").run_in_background()
+
+    def _import(self, html: str, deck: str, source: str, fetched: dict) -> None:
+        if self._closed:
+            return
         try:
-            docid, n = core.import_article(
-                mw.col, self._ready_html, self._deck_name,
-                source_url=self.url.text().strip(),
-            )
+            docid, n = core.import_article(mw.col, html, deck, source_url=source,
+                                           fetched=fetched, size_of=lambda data: image_info(data)[1])
         except Exception as e:  # noqa: BLE001
-            showWarning(f"PBIR: import failed: {e!r}", parent=self)
+            self._failed(e)
             return
         super().accept()
         mw.reset()
         tooltip(f"Imported {n} paragraph notes (doc {docid})")
+
+    def _failed(self, e: Exception) -> None:
+        self.setEnabled(True)
+        showWarning(f"PBIR: import failed: {e!r}", parent=self)
 
 
 def _dropped_file(mime):
@@ -547,15 +565,64 @@ def _dropped_file(mime):
     return path if os.path.isfile(path) else None
 
 
+_USER_AGENT = "Mozilla/5.0 (Anki PBIR addon)"
+
+
 def fetch_url(url: str) -> str:
     """URL を読み、文字列にする。文字コードの決め方は core.decode_text（ファイルと同じ）。"""
-    req = Request(url, headers={"User-Agent": "Mozilla/5.0 (Anki PBIR addon)"})
+    req = Request(url, headers={"User-Agent": _USER_AGENT})
     with urlopen(req, timeout=30) as r:
         ctype = (r.headers.get_content_type() or "").lower()
         data = r.read()
         # 平文と Markdown では <meta> を探さない
         is_html = ctype != "text/plain" and not core.is_markdown_name(urlparse(url).path)
         return core.decode_text(data, is_html=is_html, http_charset=r.headers.get_content_charset())
+
+
+def fetch_images(urls: list, referer: str) -> dict:
+    """urls の画像を並行してダウンロードする。戻り値はアドレス → (中身, MIME)（core.store_images の fetched）。
+    取れなかった画像は入らない（文書では web のアドレスのまま残る）。"""
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        images = pool.map(lambda url: _fetch_image(url, referer), urls)
+        return {url: image for url, image in zip(urls, images) if image}
+
+
+def _fetch_image(url: str, referer: str):
+    """url の画像の (中身, MIME)。2xx の答えで（urlopen はほかの答えで HTTPError を出す）、MIME が image/* か、
+    Qt が画像として読めるものだけ。それ以外は None。"""
+    headers = {"User-Agent": _USER_AGENT}
+    if referer:
+        headers["Referer"] = referer
+    try:
+        with urlopen(Request(url, headers=headers), timeout=30) as r:
+            mime, data = r.headers.get_content_type().lower(), r.read()
+    except Exception:  # noqa: BLE001  画像が取れなくても取り込みは続ける
+        return None
+    if not mime.startswith("image/"):
+        fmt = image_info(data)[0]
+        mime = "image/" + fmt if fmt else ""
+    return (data, mime) if data and mime else None
+
+
+def image_info(data: bytes) -> tuple:
+    """Qt が data のヘッダから読む画像の形式（jpeg、png など。画像として読めなければ空文字）と、表示される向きの
+    (幅, 高さ)（分からなければ None）。画像の中身は読まない。
+
+    QImageReader.size() は EXIF の向きを直す前の大きさなので（Qt 6.12 で確かめた）、向き 5〜8（90 度回す）は
+    幅と高さを入れ替える。SVG は大きさを返さない。Qt は width と height の無い SVG にも viewBox から大きさを
+    返すが（viewBox="0 0 40 10" なら 40×10）、Chromium はその SVG を列の幅で出す（Qt WebEngine 6.11 で確かめた）。
+    """
+    buf = QBuffer()
+    buf.setData(QByteArray(data))
+    buf.open(QIODevice.OpenModeFlag.ReadOnly)
+    reader = QImageReader(buf)
+    fmt, size = bytes(reader.format()).decode(), reader.size()
+    if fmt == "svg" or size.isEmpty():
+        return fmt, None
+    w, h = size.width(), size.height()
+    if reader.transformation() & QImageIOHandler.Transformation.TransformationRotate90:
+        w, h = h, w
+    return fmt, (w, h)
 
 
 def on_import() -> None:
