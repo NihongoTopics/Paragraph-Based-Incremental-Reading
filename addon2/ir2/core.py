@@ -508,13 +508,25 @@ def store_images(col: Collection, soup, docid: str, fetched: dict, size_of) -> N
     書き出すのは、埋め込みの画像（base64 の data:）と、ダウンロードした web の画像（fetched。web_src のアドレス →
     (中身, MIME)）。文書がネットワークなしで読め、カードは画像を media から読む。同じ中身は 1 ファイルにまとめる。
     ファイル名は _ir2_<docid>_0001.png のように文書順に番号を振る。アンダースコア始まりなので Check Media の未使用の
-    判定から外れる。書き出した画像は srcset と sizes、入っている <picture> の <source> を外す（ブラウザがそれらの
-    web の画像を選ばず、書き出したファイルを出すように）。size_of(中身) が大きさを返せば width と height を付ける（_set_size）。
-    書き出せない画像（ダウンロードできなかったもの、base64 でない data:、壊れた base64）は元のまま残る。
+    判定から外れる。size_of(中身) が大きさを返せば width と height を付ける（_set_size）。
+    書き出せない画像（ダウンロードできなかったもの、壊れた base64）は src が元のまま残る。
+
+    web と埋め込みの画像は、書き出せたかどうかによらず srcset と sizes、入っている <picture> の <source> を外す
+    （Pilcrow と同じ）。ブラウザはそれらと src から候補を 1 つだけ選び、それが読めなくてもほかの候補を試さない
+    （Qt WebEngine 6.11 で確かめた）。外すと、書き出した画像はそのファイルが、書き出せなかった画像は取り込みが
+    試した src が出る。ほかの画像（相対のアドレス、base64 でない data: など）は何も変えない。
     """
     stored: dict[str, tuple] = {}  # 中身のハッシュ → (ファイル名, 大きさ)
     for img in soup.find_all("img"):
-        image = fetched.get(web_src(img)) or _data_image(img.get("src", ""))
+        url = web_src(img)
+        if not url and not DATA_URI_RE.match(img.get("src", "").strip()):
+            continue
+        for a in ("srcset", "sizes"):
+            img.attrs.pop(a, None)
+        if img.parent is not None and img.parent.name == "picture":
+            for source in img.parent.find_all("source", recursive=False):
+                source.decompose()
+        image = fetched.get(url) or _data_image(img["src"])
         if image is None:
             continue
         data, mime = image
@@ -526,11 +538,6 @@ def store_images(col: Collection, soup, docid: str, fetched: dict, size_of) -> N
             stored[digest] = name, size_of(data)
         name, size = stored[digest]
         img["src"] = name
-        for a in ("srcset", "sizes"):
-            img.attrs.pop(a, None)
-        if img.parent is not None and img.parent.name == "picture":
-            for source in img.parent.find_all("source", recursive=False):
-                source.decompose()
         if size:
             _set_size(img, size)
 
