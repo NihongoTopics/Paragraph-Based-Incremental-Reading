@@ -296,21 +296,21 @@ def sanitize_html(html: str) -> str:
 
 # ---------------------------------------------------------------- 取り込み
 
-def import_article(col: Collection, html: str, deck_name: str,
-                   source_url: str = "") -> tuple:
+def import_article(col: Collection, html: str, deck_name: str, source_url: str = "",
+                   fetched: dict = None, size_of=lambda data: None) -> tuple:
     """記事を取り込む。戻り値は (docid, 作成したノート数)。
 
-    1. 正規化 2. 分割と ID 付与 3. 埋め込み画像を media のファイルへ書き出す
+    1. 正規化 2. 分割と ID 付与 3. 画像を media のファイルへ書き出す（store_images）
     4. 原本を書く 5. 作業コピーを書く
     6. 段落ノートを文書順に生成（position は Anki の既定の採番に任せる）
 
-    source_url は文書の Source（先頭のコメント。_with_source）になる。
+    source_url は文書の Source（先頭のコメント。_with_source）になる。fetched と size_of は store_images へ渡す。
     """
     ensure_models(col)
     soup, units = prepare_article(html)
 
     docid = new_docid()
-    extract_images(col, soup, docid)
+    store_images(col, soup, docid, fetched or {}, size_of)
     doc_html = _with_source(str(soup), source_url)
 
     write_doc(col, docid, doc_html)
@@ -472,36 +472,94 @@ def _ext_for(mime: str) -> str:
     return re.sub(r"[^a-z0-9]", "", sub.lower()) or "bin"
 
 
-def extract_images(col: Collection, soup, docid: str) -> None:
-    """<img src="data:...;base64,..."> を media の個別ファイルに書き出して参照に置き換える。
+_WEB_SRC_RE = re.compile(r"^(https?:)?//", re.I)
 
-    文書本体から base64 が消えるので、カード表示のたびに読み込む量が減り、
-    画像は webview 側でキャッシュされる。
-    同じ画像が複数回出てきた場合は内容のハッシュで 1 ファイルにまとめる。
-    ファイル名はアンダースコア始まりなので Check Media の未使用判定から外れる。
-    復元できない src（base64 でない data URI、壊れた base64）はそのまま残す。
+
+def web_src(img) -> str:
+    """img の src が web のアドレス（http:、https: か // で始まる）なら、そのアドレス（// には https: を補う）。違えば空文字。"""
+    src = img.get("src", "").strip()
+    if not _WEB_SRC_RE.match(src):
+        return ""
+    return "https:" + src if src.startswith("//") else src
+
+
+def web_images(html: str) -> list:
+    """取り込む文書（prepare_article の結果）の web の画像のアドレス。文書順で、同じアドレスは 1 回。
+    取り込みダイアログが取り込みの前にダウンロードする（store_images の fetched）。"""
+    soup, _units = prepare_article(html)
+    return list(dict.fromkeys(filter(None, map(web_src, soup.find_all("img")))))
+
+
+def _data_image(src: str):
+    """src が base64 の data: なら (中身, MIME)。違うか、中身が壊れているか空なら None。"""
+    m = DATA_URI_RE.match(src.strip())
+    if not m:
+        return None
+    try:
+        data = base64.b64decode(re.sub(r"\s+", "", m.group(2)), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return (data, m.group(1)) if data else None
+
+
+def store_images(col: Collection, soup, docid: str, fetched: dict, size_of) -> None:
+    """文書の画像を media のファイルに書き出し、src をそのファイル名にする（2026-11-02、Pilcrow の取り込みにそろえた）。
+
+    書き出すのは、埋め込みの画像（base64 の data:）と、ダウンロードした web の画像（fetched。web_src のアドレス →
+    (中身, MIME)）。文書がネットワークなしで読め、カードは画像を media から読む。同じ中身は 1 ファイルにまとめる。
+    ファイル名は _ir2_<docid>_0001.png のように文書順に番号を振る。アンダースコア始まりなので Check Media の未使用の
+    判定から外れる。size_of(中身) が大きさを返せば width と height を付ける（_set_size）。
+    書き出せない画像（ダウンロードできなかったもの、壊れた base64）は src が元のまま残る。
+
+    web の画像と、読める埋め込みの画像は、書き出せたかどうかによらず srcset と sizes、入っている <picture> の <source>
+    を外す（Pilcrow の irPrepare と同じ）。ブラウザはそれらと src から候補を 1 つだけ選び、それが読めなくてもほかの候補を
+    試さない（Qt WebEngine 6.11 で確かめた）。外すと、書き出した画像はそのファイルが、書き出せなかった画像は取り込みが
+    試した src が出る。ほかの画像（相対のアドレス、base64 でない data:、壊れた base64 など）は何も変えない。
     """
-    by_hash: dict[str, str] = {}
+    stored: dict[str, tuple] = {}  # 中身のハッシュ → (ファイル名, 大きさ)
     for img in soup.find_all("img"):
-        src = img.get("src", "")
-        m = DATA_URI_RE.match(src.strip())
-        if not m:
+        url = web_src(img)
+        image = fetched.get(url) or _data_image(img.get("src", ""))
+        if not url and image is None:
             continue
-        mime, b64 = m.group(1), re.sub(r"\s+", "", m.group(2))
-        try:
-            blob = base64.b64decode(b64, validate=True)
-        except (binascii.Error, ValueError):
+        for a in ("srcset", "sizes"):
+            img.attrs.pop(a, None)
+        if img.parent is not None and img.parent.name == "picture":
+            for source in img.parent.find_all("source", recursive=False):
+                source.decompose()
+        if image is None:
             continue
-        if not blob:
-            continue
-        digest = hashlib.sha1(blob).hexdigest()
-        name = by_hash.get(digest)
-        if name is None:
-            name = f"_ir2_{docid}_{len(by_hash) + 1:04d}.{_ext_for(mime)}"
+        data, mime = image
+        digest = hashlib.sha1(data).hexdigest()
+        if digest not in stored:
+            name = f"_ir2_{docid}_{len(stored) + 1:04d}.{_ext_for(mime)}"
             with open(os.path.join(col.media.dir(), name), "wb") as f:
-                f.write(blob)
-            by_hash[digest] = name
+                f.write(data)
+            stored[digest] = name, size_of(data)
+        name, size = stored[digest]
         img["src"] = name
+        if size:
+            _set_size(img, size)
+
+
+def _length(value) -> float:
+    """width か height の属性の値が正の数ならその数。無いか、数でない（100% など）か 0 なら 0。"""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*", value or "")
+    return float(m.group(1)) if m else 0
+
+
+def _set_size(img, size: tuple) -> None:
+    """img に width と height を付ける。カードは画像が読み込まれる前からその場所を取り、読み込みで文書がずれない
+    （card.css の height: auto）。記事が両方を書いていればそのまま、片方だけなら他方を画像の縦横比から、どちらも無ければ
+    size（画像の画素数）にする。"""
+    w, h = _length(img.get("width")), _length(img.get("height"))
+    iw, ih = size
+    if w and not h:
+        img["height"] = str(round(w * ih / iw))
+    elif h and not w:
+        img["width"] = str(round(h * iw / ih))
+    elif not w:
+        img["width"], img["height"] = str(iw), str(ih)
 
 
 # ---------------------------------------------------------------- 取り込むファイルとページの読み方
