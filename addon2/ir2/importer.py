@@ -608,7 +608,7 @@ def image_info(data: bytes) -> tuple:
     """Qt が data のヘッダから読む画像の形式（jpeg、png など。画像として読めなければ空文字）と、表示される向きの
     (幅, 高さ)（分からなければ None）。画像の中身は読まない。
 
-    QImageReader.size() は EXIF の向きを直す前の大きさなので（Qt 6.12 で確かめた）、向き 5〜8（90 度回す）は
+    QImageReader.size() は EXIF の向きを直す前の大きさなので（Anki 26.09.3 の Qt 6.11 で確かめた）、向き 5〜8（90 度回す）は
     幅と高さを入れ替える。SVG は大きさを返さない。Qt は width と height の無い SVG にも viewBox から大きさを
     返すが（viewBox="0 0 40 10" なら 40×10）、Chromium はその SVG を列の幅で出す（Qt WebEngine 6.11 で確かめた）。
     """
