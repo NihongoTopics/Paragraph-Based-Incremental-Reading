@@ -551,14 +551,17 @@ def _length(value) -> float:
 def _set_size(img, size: tuple) -> None:
     """img に width と height を付ける。カードは画像が読み込まれる前からその場所を取り、読み込みで文書がずれない
     （card.css の height: auto）。記事が両方を書いていればそのまま、片方だけなら他方を画像の縦横比から、どちらも無ければ
-    size（画像の画素数）にする。"""
+    size（画像の画素数）にする。片方だけで数でない（100% など）ときは、記事の書いたとおりにして何も足さない（Pilcrow の
+    irPlaceImages と同じ）。"""
+    if img.has_attr("width") and img.has_attr("height"):
+        return
     w, h = _length(img.get("width")), _length(img.get("height"))
     iw, ih = size
-    if w and not h:
+    if w:
         img["height"] = str(round(w * ih / iw))
-    elif h and not w:
+    elif h:
         img["width"] = str(round(h * iw / ih))
-    elif not w:
+    elif not img.has_attr("width") and not img.has_attr("height"):
         img["width"], img["height"] = str(iw), str(ih)
 
 
@@ -1731,14 +1734,16 @@ def library_duplicates(col: Collection) -> dict:
 
 # ---------------------------------------------------------------- デッキ
 
-def _home_deck(card) -> int:
-    """カードの元のデッキ。フィルターデッキに入っていれば元のデッキ（odid）、そうでなければ今のデッキ。"""
+def home_deck(card) -> int:
+    """カードの元のデッキ。フィルターデッキに入っていれば元のデッキ（odid）、そうでなければ今のデッキ。
+    Move Document のチェックと、カードから作るノート（cloze、Extract の段落、quiz）のデッキ（reviewer._deck_id）。
+    Anki はフィルターデッキへ足すノートを Default に入れる（26.09.2 の rslib/src/notetype/cardgen.rs の deck_for_adding）。"""
     return card.odid or card.did
 
 
 def doc_decks(col: Collection, docid: str) -> set:
     """PBIR → Move Document でチェックを付けるデッキ。文書のカードの元のデッキの集合（ふつうは 1 個）。"""
-    return {_home_deck(c) for c in _doc_cards(col, docid)}
+    return {home_deck(c) for c in _doc_cards(col, docid)}
 
 
 def move_document(col: Collection, docid: str, deck_id: int) -> int:
@@ -1748,7 +1753,7 @@ def move_document(col: Collection, docid: str, deck_id: int) -> int:
     （26.09.2 の pylib で確かめた。Change Deck と同じ）。元のデッキが既に deck_id のカードは触らない（フィルターデッキから
     出さない）。文書は変えない。
     """
-    cids = [c.id for c in _doc_cards(col, docid) if _home_deck(c) != deck_id]
+    cids = [c.id for c in _doc_cards(col, docid) if home_deck(c) != deck_id]
     if cids:
         col.set_deck(cids, deck_id)
     return len(cids)
