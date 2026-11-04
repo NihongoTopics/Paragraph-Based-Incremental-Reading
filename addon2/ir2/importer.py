@@ -164,8 +164,8 @@ class ImportDialog(QDialog):
     貼り付けの欄があったころと同じ規則で、貼り付けの代わりにファイルを使う。
       - URL 欄は常に文書の Source になる。
       - URL を入れる（貼り付ける）と、すぐに裏で読み込む。読み込めたらプレビューに出す。
-      - URL のページも HTML のファイルも、Readability で記事の本文を取り出して出す。Markdown は HTML にしてから、
-        平文はそのまま、どれも import.js が文書の形にする（_ImportPage、_prepare）。
+      - URL のページも HTML のファイルも、Readability で記事の本文を取り出して出す。平文（Markdown も）はそのまま。どちらも
+        import.js が文書の形にする（_ImportPage、_prepare）。
       - ファイルを選ぶと、プレビューはファイルに替わる。取り込むのはファイルで、URL から
         読み込んだ文書は使わない（URL は Source としてだけ使う）。
       - ファイルを外すと（Remove）、URL から読み込んだ文書がプレビューに戻る。
@@ -341,7 +341,7 @@ class ImportDialog(QDialog):
         # 静的関数の QFileDialog は macOS では標準のファイル選択（NSOpenPanel）を使う
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose an article to import", _last_dir,
-            "Web pages, text and Markdown (*.html *.htm *.xhtml *.txt *.md *.markdown);;All files (*)")
+            "Web pages, text and Markdown (*.html *.htm *.xhtml *.txt *.text *.md *.markdown);;All files (*)")
         if not path:
             return
         _last_dir = os.path.dirname(path)
@@ -549,8 +549,8 @@ def fetch_url(url: str) -> str:
     with urlopen(req, timeout=30) as r:
         ctype = (r.headers.get_content_type() or "").lower()
         data = r.read()
-        # 平文と Markdown では <meta> を探さない
-        is_html = ctype != "text/plain" and not core.is_markdown_name(urlparse(url).path)
+        # 平文（種類か拡張子で。ファイルと同じく拡張子でも決める）では <meta> を探さない
+        is_html = ctype != "text/plain" and not urlparse(url).path.lower().endswith(core.PLAIN_TEXT_EXTS)
         return core.decode_text(data, is_html=is_html, http_charset=r.headers.get_content_charset())
 
 

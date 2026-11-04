@@ -421,47 +421,26 @@ def decode_text(data: bytes, is_html: bool, http_charset: str = None) -> str:
     return d.unicode_markup
 
 
-PLAIN_TEXT_EXTS = (".txt", ".text")
-MARKDOWN_EXTS = (".md", ".markdown")
-
-
-def markdown_to_html(text: str) -> str:
-    """Markdown を HTML に変換する。以後は import.js がほかの HTML と同じに扱う（Readability は通さない）。
-
-    Anki に同梱の Python-Markdown（26.09.2 では 3.10.3）を使い、同梱の extra 拡張（表、``` の囲みのコード、
-    脚注、定義リストなど）を有効にする。見出しは h1〜h6 になりカードにならない。段落、リストの項目、
-    引用、コードのブロックが段落（カード）になる。Markdown の中に書かれた HTML はそのまま通るが、
-    取り込みでスクリプトを動かしうるものは外れる（sanitize）。
-    """
-    import markdown  # Anki の同梱。aqt を読み込む前でも使えるよう、ここで読む
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return markdown.markdown(text, extensions=["extra"], output_format="html")
-
-
-def is_markdown_name(name: str) -> bool:
-    """ファイル名か URL のパスが Markdown の拡張子で終わるか。"""
-    return name.lower().endswith(MARKDOWN_EXTS)
+# 平文として取り込む拡張子。Markdown も平文として取り込み、記号は書かれたまま残る（Pilcrow も同じ）
+PLAIN_TEXT_EXTS = (".txt", ".text", ".md", ".markdown")
 
 
 def article_html(text: str, name: str) -> tuple:
     """取り込む文字列と、その種類（import.js の irImport の kind）。name はファイル名か URL のパス。戻り値は (文字列, 種類)。
 
-    Markdown の拡張子なら HTML に変換して markdown、平文の拡張子か、< を含まない文字列なら平文のまま text（irImport が
-    空行で段落に分ける）、それ以外は HTML のまま html（irImport が Readability で本文を取り出す）。URL とファイルの両方が
-    これを使う。Pilcrow も同じ決め方（DocumentImport.swift の kind）。
+    平文の拡張子（Markdown を含む）か、< を含まない文字列なら text（irImport が空行で段落に分ける）、それ以外は html（irImport が
+    Readability で本文を取り出す）。URL とファイルの両方がこれを使う。Pilcrow も同じ決め方（DocumentImport.swift の kind）。
     """
-    if is_markdown_name(name):
-        return markdown_to_html(text), "markdown"
     if name.lower().endswith(PLAIN_TEXT_EXTS) or "<" not in text:
         return text, "text"
     return text, "html"
 
 
 def read_article_file(path: str) -> tuple:
-    """取り込むファイルを読む。戻り値は article_html と同じ。平文と Markdown では <meta> の文字コードを探さない。"""
+    """取り込むファイルを読む。戻り値は article_html と同じ。平文では <meta> の文字コードを探さない。"""
     with open(path, "rb") as f:
         data = f.read()
-    is_html = not path.lower().endswith(PLAIN_TEXT_EXTS + MARKDOWN_EXTS)
+    is_html = not path.lower().endswith(PLAIN_TEXT_EXTS)
     return article_html(decode_text(data, is_html=is_html), path)
 
 

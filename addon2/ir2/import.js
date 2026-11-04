@@ -44,7 +44,7 @@ function irSanitize(root) {
 }
 
 // An article as IR2's document. `kind` is html (a web page or HTML file, whose article Readability takes
-// out), markdown (already made HTML) or text (plain text). Returns irPrepare's result with the article's
+// out) or text (plain text). Returns irPrepare's result with the article's
 // byline and date, or {error} if Readability finds no article.
 function irImport(source, kind, url) {
     let html = source, byline = "", date = "";
