@@ -3,14 +3,12 @@
 
 import html as html_lib
 import os
-import subprocess
 import tempfile
 from urllib.parse import urlparse
 
-from anki.utils import is_mac, no_bundled_libs
 from aqt import mw
 from aqt.operations import CollectionOp
-from aqt.qt import QDesktopServices, QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QUrl
+from aqt.qt import QDialog, QDialogButtonBox, QFormLayout, QLineEdit, QUrl
 from aqt.utils import openLink, showWarning, tooltip
 
 from . import core
@@ -63,7 +61,7 @@ def open_source() -> None:
 
 
 def open_document(orig: bool) -> None:
-    """PBIR → Open Document → Original（orig）と Current。文書を既定のブラウザで表示する。
+    """PBIR → Open Document → Original（orig）と Current。文書を .html のファイルを開く既定のアプリで開く（ふつうはブラウザ）。
 
     Original は取り込み時に保存した原本（_ir2_<docid>.orig.html）、Current は今の作業コピー
     （_ir2_<docid>.html。編集、線、cloze の印を含む）。どちらのファイルも変更しない。
@@ -93,45 +91,7 @@ def open_document(orig: bool) -> None:
             # 文書は変えないが、表示用の複製からはスクリプトを動かしうるものを外す（core.sanitize）
             + core.sanitize_html(body) + "\n</body></html>\n"
         )
-    open_in_browser(QUrl.fromLocalFile(view_path).toString(QUrl.ComponentFormattingOption.FullyEncoded))
-
-
-# macOS の既定のブラウザを NSWorkspace で調べて、そのアプリで開く。
-# file:// の URL を普通に開くと、ブラウザではなく .html の既定アプリ（エディタなど）で
-# 開かれることがあるため。CPython の main の webbrowser.py（MacOSXOSAScript）と同じ方法。
-# Anki が同梱する Python 3.13 の webbrowser にはこの処理がまだ無い。
-_MAC_OPEN_IN_BROWSER = """
-use framework "AppKit"
-use AppleScript version "2.4"
-use scripting additions
-
-property NSWorkspace : a reference to current application's NSWorkspace
-property NSURL : a reference to current application's NSURL
-
-set http_url to NSURL's URLWithString:"https://example.com"
-set browser_url to (NSWorkspace's sharedWorkspace)'s URLForApplicationToOpenURL:http_url
-set app_path to browser_url's relativePath as text
-
-tell application app_path
-    activate
-    open location "%s"
-end tell
-"""
-
-
-def open_in_browser(url: str) -> None:
-    if is_mac:
-        script = _MAC_OPEN_IN_BROWSER % url.replace('"', "%22")
-        try:
-            with no_bundled_libs():
-                r = subprocess.run(["/usr/bin/osascript", "-"], input=script,
-                                   text=True, capture_output=True, timeout=30)
-            if r.returncode == 0:
-                return
-        except (OSError, subprocess.SubprocessError):
-            pass
-    with no_bundled_libs():
-        QDesktopServices.openUrl(QUrl(url))
+    openLink(QUrl.fromLocalFile(view_path))
 
 
 # ---------------------------------------------------------------- Modify Document
