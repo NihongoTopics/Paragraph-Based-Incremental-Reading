@@ -65,52 +65,15 @@ def _looks_like_url(text: str) -> bool:
 _BLANK = "<!doctype html><html><body></body></html>"
 
 
-_VENDOR = os.path.join(os.path.dirname(__file__), "vendor")
-
-# Readability を動かす関数。ページの HTML を DOMParser で読むので、ページのスクリプトは動かず、
-# 画像も読み込まれない（不活性な文書）。<base> に URL を入れておくと、Readability が相対 URL を
-# 絶対 URL に直す（Readability.js の _fixRelativeUris は document.baseURI を使う）。
-# Readability は題、著者、日付を本文とは別に返す（parse() の title, byline, publishedTime）。
-# Firefox のリーダービューと同じく、それを本文の前に置く: 題は h1、著者と日付は 1 行の div（カードにならない）。
-_EXTRACT_JS = r"""
-function irExtract(html, url) {
-  try {
-    var doc = new DOMParser().parseFromString(html, 'text/html');
-    if (url) {
-      var base = doc.createElement('base');
-      base.setAttribute('href', url);
-      (doc.head || doc.documentElement).prepend(base);
-    }
-    var art = new Readability(doc).parse();
-    if (!art) return JSON.stringify({error: 'no article was found'});
-    // 結果を組み立てる文書も不活性にする（画像を読まず、イベント属性を動かさない）
-    var out = document.implementation.createHTMLDocument('');
-    out.body.innerHTML = art.content;
-    var date = /^\d{4}-\d{2}-\d{2}/.exec(art.publishedTime || '');
-    var line = [art.byline, date && date[0]].filter(function (s) { return s && s.trim(); }).join(', ');
-    if (line) {
-      var by = out.createElement('div');
-      by.textContent = line;
-      out.body.prepend(by);
-    }
-    if (art.title) {
-      var h = out.createElement('h1');
-      h.textContent = art.title;
-      out.body.prepend(h);
-    }
-    return JSON.stringify({content: out.body.innerHTML});
-  } catch (e) {
-    return JSON.stringify({error: String(e && e.message || e)});
-  }
-}
-"""
+_HERE = os.path.dirname(__file__)
 
 
-class _ArticleExtractor:
-    """ページから記事の本文だけを取り出す。Mozilla Readability 0.6.0（vendor/Readability.js、
-    Apache-2.0。Firefox のリーダービューの処理）を、見えない QWebEnginePage で動かす。
+class _ImportPage:
+    """取り込みの JS を動かす、見えない QWebEnginePage。Mozilla Readability 0.6.0（vendor/Readability.js、Apache-2.0。
+    Firefox のリーダービューの処理）と、記事を文書の形にする import.js（Pilcrow と同じファイル）を読み込んでおく。
 
-    extract(html, url, callback) の callback は (本文の HTML, 失敗の理由) のどちらか片方を受け取る。
+    call(name, args, callback) は import.js の関数 name を args で呼び、戻り値（JSON で受け取ったもの）を callback に渡す。
+    動かなかったときは None を渡す。
     """
 
     def __init__(self, parent):
@@ -121,9 +84,11 @@ class _ArticleExtractor:
         self.page.setHtml(_BLANK)
 
     def _loaded(self, _ok: bool) -> None:
-        with open(os.path.join(_VENDOR, "Readability.js"), encoding="utf-8") as f:
-            src = f.read()
-        self.page.runJavaScript(src + "\n" + _EXTRACT_JS, lambda _r: self._set_ready())
+        src = ""
+        for name in ("vendor/Readability.js", "import.js"):
+            with open(os.path.join(_HERE, name), encoding="utf-8") as f:
+                src += f.read() + "\n"
+        self.page.runJavaScript(src, lambda _r: self._set_ready())
 
     def _set_ready(self) -> None:
         self._ready = True
@@ -131,22 +96,20 @@ class _ArticleExtractor:
         for args in queue:
             self._run(*args)
 
-    def extract(self, html: str, url: str, callback) -> None:
+    def call(self, name: str, args: list, callback) -> None:
         if self._ready:
-            self._run(html, url, callback)
+            self._run(name, args, callback)
         else:
-            self._queue.append((html, url, callback))
+            self._queue.append((name, args, callback))
 
-    def _run(self, html: str, url: str, callback) -> None:
+    def _run(self, name: str, args: list, callback) -> None:
         def done(result) -> None:
             try:
-                r = json.loads(result)
+                callback(json.loads(result))
             except (TypeError, ValueError):
-                callback(None, "the extractor did not return a result")
-                return
-            callback(r.get("content"), r.get("error"))
+                callback(None)
 
-        self.page.runJavaScript(f"irExtract({json.dumps(html)}, {json.dumps(url)})", done)
+        self.page.runJavaScript(f"JSON.stringify({name}(...{json.dumps(args)}))", done)
 
 
 class _FileDrop(QObject):
@@ -188,11 +151,11 @@ class _Article:
         self.reset(None)
 
     def reset(self, origin) -> None:
-        """元を替える（None なら元が無い）。seq を増やして、前の元の取り出しの結果を捨てる（ImportDialog._extract）。"""
+        """元を替える（None なら元が無い）。seq を増やして、前の元の取り出しの結果を捨てる（ImportDialog._prepare）。"""
         self.seq += 1
         self.origin = origin   # 説明に出す名前（読み込みが済んだ URL かファイル名）
-        self.html = None       # 取り出した記事の本文（平文と Markdown は HTML にしたもの）
-        self.error = None      # 本文を取り出せなかった理由
+        self.prepared = None   # 取り込む文書（import.js の irImport の結果: html, paragraphs, images）
+        self.error = None      # 文書を作れなかった理由
 
 
 class ImportDialog(QDialog):
@@ -201,15 +164,15 @@ class ImportDialog(QDialog):
     貼り付けの欄があったころと同じ規則で、貼り付けの代わりにファイルを使う。
       - URL 欄は常に文書の Source になる。
       - URL を入れる（貼り付ける）と、すぐに裏で読み込む。読み込めたらプレビューに出す。
-      - URL のページも HTML のファイルも、Readability で記事の本文を取り出して（_ArticleExtractor）出す。
-        平文と Markdown はアドオンが HTML に起こすので、そのまま出す。
+      - URL のページも HTML のファイルも、Readability で記事の本文を取り出して出す。Markdown は HTML にしてから、
+        平文はそのまま、どれも import.js が文書の形にする（_ImportPage、_prepare）。
       - ファイルを選ぶと、プレビューはファイルに替わる。取り込むのはファイルで、URL から
         読み込んだ文書は使わない（URL は Source としてだけ使う）。
       - ファイルを外すと（Remove）、URL から読み込んだ文書がプレビューに戻る。
       - ファイルは File の行かプレビューへのドラッグ＆ドロップでも選べる（Choose File ... と同じ扱い。_FileDrop）。
-    プレビューは取り込まれる文書全体（カードに分ける前の形。core.prepare_article の結果）。
+    プレビューは取り込まれる文書全体（import.js の irImport の結果）。
     OK で取り込むのはプレビューに出ている文書で、出ていなければ OK は灰色。文書の画像は media のファイルにする
-    （web の画像はダウンロードしてから。accept と core.store_images）。
+    （web の画像はダウンロードしてから。accept、core.store_images、import.js の irPlaceImages）。
     Deck はボタンで、PBIR → Move Document と同じデッキのメニューから選ぶ。初期値は選択中のデッキ。
     URL が取り込み済みの文書の Source と同じなら、URL 欄の下に警告を出す。ファイルの段落が取り込み済みの文書の原本にも
     あれば、File の行の下に警告を出す（どちらも取り込みは止めない）。
@@ -224,8 +187,8 @@ class ImportDialog(QDialog):
         self._from_file = _Article()   # 選んだファイル（origin はファイル名）
         self._url_error = None     # 読み込めなかった理由（今の URL のもの）
         self._fetching = None      # 読み込み中の URL
-        self._shown = None         # プレビューに出している HTML
-        self._ready_html = None    # OK で取り込む HTML（プレビューに出ていて段落があるもの）
+        self._shown = None         # プレビューに出している文書（_Article.prepared）
+        self._ready = None         # OK で取り込む文書（プレビューに出ていて段落があるもの）
         self._closed = False
         self._preview_path = None
         root = QHBoxLayout(self)
@@ -240,7 +203,7 @@ class ImportDialog(QDialog):
         # URL 欄の URL が、取り込み済みの文書の Source と同じなら、ここに出す（_check_url_dupes）
         self.url_dupes = _warning_label()
         form.addRow("", self.url_dupes)
-        self._extractor = _ArticleExtractor(self)
+        self._page = _ImportPage(self)
         self._fetch_timer = QTimer(self)
         self._fetch_timer.setSingleShot(True)
         self._fetch_timer.timeout.connect(self._fetch_now)
@@ -330,13 +293,13 @@ class ImportDialog(QDialog):
                 return  # ダイアログが閉じたか、その間に URL が変わった
             self._fetching = None
             try:
-                html, plain = fut.result()
+                text, kind = fut.result()
             except Exception as e:  # noqa: BLE001
                 self._url_error = str(e) or repr(e)
                 self._refresh()
                 return
             self._from_url.origin = url
-            self._extract(self._from_url, html, url, plain)
+            self._prepare(self._from_url, text, kind, url)
             self._refresh()
 
         # 通信だけでコレクションに触らないので uses_collection=False（taskman.py の説明のとおり）
@@ -352,27 +315,24 @@ class ImportDialog(QDialog):
                             f"{'has' if n == 1 else 'have'} this URL as the source.")
         _show_lines(self.url_dupes, lines)
 
-    def _extract(self, src: _Article, html: str, url: str, plain: bool) -> None:
-        """src（URL かファイル）の取り込む文書を作り、src.html か src.error に入れる。HTML は Readability で本文を取り出す。
-        平文と Markdown はアドオンが HTML に起こしたもので、取り出す本文も周りも無いので、そのまま使う。
-        取り出しが終わる前に src の元が替わっていたら（seq が違う）、結果を捨てる。ファイルなら重複の警告も出す。"""
+    def _prepare(self, src: _Article, text: str, kind: str, url: str) -> None:
+        """src（URL かファイル）の取り込む文書を import.js の irImport で作り、src.prepared か src.error に入れる。
+        kind は core.article_html の種類で、html なら Readability で本文を取り出す。作り終わる前に src の元が替わって
+        いたら（seq が違う）、結果を捨てる。ファイルなら重複の警告も出す。"""
         seq = src.seq
 
-        def done(content, error) -> None:
+        def done(result) -> None:
             if self._closed or seq != src.seq:
                 return
-            if content is not None:
-                src.html = content
-                if src is self._from_file:
-                    self._check_file_dupes(content)
+            if result is None or result.get("error"):
+                src.error = result and result["error"] or "the import script did not return a result"
             else:
-                src.error = error or "unknown error"
+                src.prepared = result
+                if src is self._from_file:
+                    self._check_file_dupes(result)
             self._refresh()
 
-        if plain:
-            done(html, None)
-        else:
-            self._extractor.extract(html, url, done)
+        self._page.call("irImport", [text, kind, url], done)
 
     # ------------------------------------------------ file
 
@@ -394,7 +354,7 @@ class ImportDialog(QDialog):
     def _set_file(self, path: str) -> None:
         """path を取り込むファイルにする。Choose File ... とドロップの両方から。"""
         try:
-            html, plain = core.read_article_file(path)
+            text, kind = core.read_article_file(path)
         except Exception as e:  # noqa: BLE001
             showWarning(f"PBIR: could not read the file: {e!r}", parent=self)
             return
@@ -402,23 +362,20 @@ class ImportDialog(QDialog):
         self.file_label.setText(self._from_file.origin)
         self.remove_file.show()
         self.file_dupes.hide()
-        self._extract(self._from_file, html, "", plain)
+        self._prepare(self._from_file, text, kind, "")
         self._refresh()
 
     MAX_DUPE_LINES = 5  # ファイルの重複の警告に出す文書の数。残りは数だけ出す
 
-    def _check_file_dupes(self, html: str) -> None:
+    def _check_file_dupes(self, prepared: dict) -> None:
         """ファイルの段落が取り込み済みの文書の原本にもあれば、File の行の下に、文書ごとに共通の段落の数を出す
         （core.shared_paragraphs。全部が同じでなくても出す）。取り込みは止めない。"""
-        try:
-            _soup, units = core.prepare_article(html)
-        except ValueError:  # 段落が無い。取り込めないことは _refresh が出す
-            units = []
-        found = core.shared_paragraphs(mw.col, units)
+        texts = core.prepared_texts(prepared)
+        found = core.shared_paragraphs(mw.col, texts)
         if not found:
             _show_lines(self.file_dupes, [])
             return
-        total = len(core.para_texts(units))
+        total = len(texts)
         n = len(found)
         lines = [f"Warning: paragraphs of this file are already in {core.plural(n, 'document')}."]
         for docid, k in found[:self.MAX_DUPE_LINES]:
@@ -454,29 +411,27 @@ class ImportDialog(QDialog):
         """
         has_file = self._from_file.origin is not None
         src = self._from_file if has_file else self._from_url
-        html, origin, error = src.html, src.origin, src.error
+        prepared, origin, error = src.prepared, src.origin, src.error
         waiting = None  # プレビューに出すものが無いときの説明
-        if html is None and origin is not None:
+        if prepared is None and origin is not None:
             waiting = (f"Could not extract the article from {origin}: {error}." if error else
                        f"Extracting the article from {origin} ...")
         lines = []
-        self._ready_html = None
-        if html is None:
+        self._ready = None
+        if prepared is None:
             self._show_preview(None)
             lines.append(waiting or self._url_status() or
                          "Paste a URL, or choose or drop a file. The article is shown on the right "
                          "as it will be imported.")
         else:
-            try:
-                soup, units = core.prepare_article(html)
-            except ValueError as e:
+            n = len(prepared["paragraphs"])
+            if not n:
                 self._show_preview(None)
-                lines.append(f"Cannot import {origin}: {e}.")
+                lines.append(f"Cannot import {origin}: no paragraphs found in the article.")
             else:
-                self._ready_html = html
-                if self._shown is not html:
-                    self._show_preview(core.preview_html(soup, night=theme_manager.night_mode), html)
-                n = len(units)
+                self._ready = prepared
+                if self._shown is not prepared:
+                    self._show_preview(core.preview_html(prepared, night=theme_manager.night_mode), prepared)
                 lines.append(f"Showing {origin}: {core.plural(n, 'paragraph')}, {core.plural(n, 'card')}.")
             if has_file and self.url.text().strip():
                 lines.append("The file is imported. The URL is recorded as the source; "
@@ -484,15 +439,15 @@ class ImportDialog(QDialog):
                 if self._url_status():
                     lines.append(self._url_status())
         self.summary.setText("\n".join(lines))
-        self.ok.setEnabled(self._ready_html is not None)
+        self.ok.setEnabled(self._ready is not None)
 
-    def _show_preview(self, page, html=None) -> None:
-        """page を右に出す。None なら空にする。html はその元の文書（同じものを出し直さないため）。"""
+    def _show_preview(self, page, prepared=None) -> None:
+        """page を右に出す。None なら空にする。prepared はその元の文書（同じものを出し直さないため）。"""
         if page is None:
             if self._shown is None and self._preview_path is not None:
                 return
             page = _BLANK
-        self._shown = html
+        self._shown = prepared
         # setHtml は 2 MB を超える内容を出せない（data: URL にして読み込むため。Qt の
         # QWebEngineView::setHtml の説明）。画像を埋め込んだ記事は超えるので、一時ファイルに書いて読み込む
         self._remove_preview_file()
@@ -518,26 +473,46 @@ class ImportDialog(QDialog):
     def accept(self) -> None:
         """OK でプレビューに出ている文書を取り込む。Source は URL 欄。閉じるのは成功したときだけ。
 
-        まず文書の web の画像を裏でダウンロードし（fetch_images。その間はダイアログを触れない）、済んだら取り込む（_import）。
+        まず文書の web の画像を裏でダウンロードし（fetch_images。その間はダイアログを触れない）、済んだら画像を media の
+        ファイルにして（core.store_images）、その名前と大きさを文書に入れ（import.js の irPlaceImages）、取り込む（_import）。
         失敗したら警告を出してダイアログを開いたままにし、入力をそのまま直せるようにする。
         """
-        if self._ready_html is None:
+        if self._ready is None:
             return
-        html, deck, source = self._ready_html, self._deck_name, self.url.text().strip()
+        prepared, deck, source = self._ready, self._deck_name, self.url.text().strip()
         # 画像を頼むときの Referer は記事のページ。ファイルを取り込むときは付けない
         referer = "" if self._from_file.origin is not None else self._from_url.origin
+        urls = [src for src in prepared["images"] if not src.startswith("data:")]
         self.setEnabled(False)
-        QueryOp(parent=self, op=lambda _col: fetch_images(core.web_images(html), referer),
-                success=lambda fetched: self._import(html, deck, source, fetched)
+        QueryOp(parent=self, op=lambda _col: fetch_images(urls, referer),
+                success=lambda fetched: self._place(prepared, deck, source, fetched)
                 ).failure(self._failed).without_collection().with_progress(
                     "Downloading the article's images").run_in_background()
 
-    def _import(self, html: str, deck: str, source: str, fetched: dict) -> None:
+    def _place(self, prepared: dict, deck: str, source: str, fetched: dict) -> None:
+        if self._closed:
+            return
+        docid = core.new_docid()
+        try:
+            placed = core.store_images(mw.col, docid, prepared["images"], fetched,
+                                       size_of=lambda data: image_info(data)[1])
+        except Exception as e:  # noqa: BLE001
+            self._failed(e)
+            return
+
+        def done(result) -> None:
+            if result is None:
+                self._failed(RuntimeError("the import script could not place the images"))
+            else:
+                self._import(docid, result, deck, source)
+
+        self._page.call("irPlaceImages", [prepared["html"], prepared["paragraphs"], placed], done)
+
+    def _import(self, docid: str, prepared: dict, deck: str, source: str) -> None:
         if self._closed:
             return
         try:
-            docid, n = core.import_article(mw.col, html, deck, source_url=source,
-                                           fetched=fetched, size_of=lambda data: image_info(data)[1])
+            n = core.import_article(mw.col, docid, prepared, deck, source_url=source)
         except Exception as e:  # noqa: BLE001
             self._failed(e)
             return

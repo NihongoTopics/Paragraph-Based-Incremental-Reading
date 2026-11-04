@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Paragraph-Based Incremental Reading: core logic.
 
-aqt に依存しない層。GUI なしで pylib (anki) だけで動作確認できる。
+aqt に依存しない層。GUI なしで pylib (anki) だけで動作確認できる（取り込みで記事を文書の形にするのは import.js で、
+ブラウザのページが要る）。
 記事の文章は文書のファイルに一つだけあり、ノートは文書の中の段落か cloze を指す。
 カードは文書の直下の <div data-ir="pN"> 1 個で、その中に p やリストなどのブロックがそのまま入る。
 """
@@ -12,7 +13,6 @@ import base64
 import binascii
 import codecs
 import hashlib
-import html
 import json
 import os
 import re
@@ -95,21 +95,12 @@ def _add_note(col: Collection, model: str, docid: str, anchor: str, text: str, d
 
 # ---------------------------------------------------------------- 文書の要素
 
-# カードにするブロック（segment）。文書の直下にある p とリスト。リストは項目ごとでなく全体で 1 枚。
-# 見出し、pre、blockquote、表、図、hr などは表示するがカードにしない（中の p もカードにしない）
-CARD_TAGS = ("p", "ul", "ol", "dl")
+# カードにするブロックのうちのリスト（カードは文書の直下の p とリストで、リストは項目ごとでなく全体で 1 枚。取り込みの import.js）
 LIST_TAGS = ("ul", "ol", "dl")
 
-# 取り込みで外す入れ物（segment）。Readability の出力では本文がこれらの入れ子になっていて、class と style は
-# Readability が外している（Readability.js の _cleanClasses と _cleanStyles）。main と header は HTML5 の入れ物
-CONTAINER_TAGS = ("div", "section", "article", "main", "header")
-
-# 取り込み時に落とす要素（スクリプトを動かしうる要素は sanitize が UNSAFE_TAGS で落とす）
-DROP_TAGS = ["nav", "form", "button"]
-
 # ブロックの要素。p の開始タグを閉じる要素（Chromium で確認した、ブラウザが p の中に置かない要素）と表の中の要素。
-# 取り込みでは入れ物の直下のこれらをブロックとして扱う（segment）。Choices と Items の行の区切り（choice_lines）、
-# カードの JS の線の範囲と貼り付けも同じものを使う（_doc_js に渡す）。
+# Choices と Items の行の区切り（choice_lines）、カードの JS の線の範囲と貼り付けが使う（_doc_js に渡す）。
+# 取り込みの import.js にも同じものがある（IR_BLOCKS）。
 BLOCK_TAGS = {
     "address", "article", "aside", "blockquote", "center", "details", "dialog", "dir",
     "div", "dl", "fieldset", "figcaption", "figure", "footer", "header", "hgroup", "main",
@@ -118,22 +109,13 @@ BLOCK_TAGS = {
     "plaintext", "table", "hr", "xmp",
     "thead", "tbody", "tfoot", "tr", "td", "th",
 }
-# 文字が無くても中身に数える要素（_has_content）。カードの JS も同じものを使う（_doc_js に渡す）
+# 文字が無くても中身に数える要素（_has_content）。カードの JS も同じものを使う（_doc_js に渡す）。import.js にもある
 MEDIA_TAGS = {"img", "svg", "video", "audio", "canvas", "iframe", "object", "embed", "math"}
 _HEADINGS = ["h1", "h2", "h3", "h4", "h5", "h6"]
-
-# このアドオンが文書に書く印。取り込む HTML に既にあれば外す。アドオンが書いた文書
-# （原本 _ir2_<docid>.orig.html など）を取り込み直すと、見出しなど段落でない要素に古い
-# data-ir が残り、振り直した段落の ID と重なるため（2026-09-25、プレビューで見つかった）。
-IR_ATTRS = ("data-ir", "data-cloze", "data-ir-split", "contenteditable")
 
 
 def _is_blank(node) -> bool:
     return isinstance(node, NavigableString) and not node.strip()
-
-
-def _is_block(node) -> bool:
-    return isinstance(node, Tag) and node.name in BLOCK_TAGS
 
 
 def _has_content(el) -> bool:
@@ -251,8 +233,8 @@ def set_doc_source(col: Collection, docid: str, url: str) -> bool:
 # onerror などのイベント属性は動く（Chromium で確認）。そうすると記事の書き手のコードが学習画面で
 # pycmd やネットワークを使える。Readability も出力を消毒しない（README の Security の節が、
 # 信頼できない入力では出力を消毒せよと勧めている）。そこで、コードを動かしうるものを外す。
-# 取り込み（normalize）、保存（save_edit, extract_paragraph）、
-# Open Document の表示用の複製（sanitize_html）で行う。原本そのものは変えない。
+# 保存（save_edit, extract_paragraph）、quiz のフィールド、Open Document の表示用の複製（sanitize_html）で行う。
+# 原本そのものは変えない。取り込みでは import.js の irSanitize が同じ規則で外す。
 
 UNSAFE_TAGS = ["script", "style", "iframe", "frame", "frameset", "object", "embed", "applet",
                "base", "meta", "link", "noscript"]
@@ -295,160 +277,25 @@ def sanitize_html(html: str) -> str:
 
 
 # ---------------------------------------------------------------- 取り込み
+#
+# 記事を文書の形にするのは import.js（Pilcrow と同じファイル）で、取り込みダイアログが見えないページで動かす（importer.py）。
+# irImport が文書（prepared: {"html", "paragraphs": [{"id", "html"}], "images"}）を作り、画像をファイルにしたあと
+# （store_images）、irPlaceImages がそのファイル名と大きさを文書に入れる。ここでは文書とノートを書く。
 
-def import_article(col: Collection, html: str, deck_name: str, source_url: str = "",
-                   fetched: dict = None, size_of=lambda data: None) -> tuple:
-    """記事を取り込む。戻り値は (docid, 作成したノート数)。
+def import_article(col: Collection, docid: str, prepared: dict, deck_name: str, source_url: str = "") -> int:
+    """記事を取り込む。prepared は import.js が作った文書（画像を置いたあと）。戻り値は作成したノート数。
 
-    1. 正規化 2. 分割と ID 付与 3. 画像を media のファイルへ書き出す（store_images）
-    4. 原本を書く 5. 作業コピーを書く
-    6. 段落ノートを文書順に生成（position は Anki の既定の採番に任せる）
-
-    source_url は文書の Source（先頭のコメント。_with_source）になる。fetched と size_of は store_images へ渡す。
+    原本と作業コピーを書き（先頭に Source のコメント。_with_source）、段落ノートを文書順に作る（position は Anki の既定の
+    採番に任せる）。
     """
     ensure_models(col)
-    soup, units = prepare_article(html)
-
-    docid = new_docid()
-    store_images(col, soup, docid, fetched or {}, size_of)
-    doc_html = _with_source(str(soup), source_url)
-
+    doc_html = _with_source(prepared["html"], source_url)
     write_doc(col, docid, doc_html)
     write_doc(col, docid, doc_html, orig=True)
     deck_id = col.decks.id(deck_name)
-    for el in units:  # 文書順。作成順が position を決める
-        _add_note(col, PARA_MODEL, docid, el["data-ir"], el.decode_contents(), deck_id)
-    return docid, len(units)
-
-
-def prepare_article(html: str) -> tuple:
-    """取り込む形の文書を作る。戻り値は (soup, 段落の要素のリスト)。段落が無ければ ValueError。
-
-    html は、HTML なら取り込みダイアログが Readability で取り出した本文、平文と Markdown ならそれを起こした HTML。
-    正規化、入れ物を外してカードのブロックを div で包む（segment）まで。
-    取り込み（import_article）と取り込みダイアログのプレビュー（preview_html）の両方がこれを使うので、
-    プレビューに出る文書と取り込まれる文書は同じになる。画像の書き出しはしない（取り込み時だけ）。
-    """
-    soup = normalize(html)
-    lift_headings(soup)
-    units = segment(soup)
-    if not units:
-        raise ValueError("no paragraphs found in the article")
-    return soup, units
-
-
-def normalize(html: str) -> BeautifulSoup:
-    soup = BeautifulSoup(html, "html.parser")
-    for tag in soup.find_all(DROP_TAGS):
-        tag.decompose()
-    for tag in soup.find_all(lambda t: any(a in t.attrs for a in IR_ATTRS)):
-        for a in IR_ATTRS:
-            tag.attrs.pop(a, None)
-    for c in soup.find_all(string=lambda t: isinstance(t, Comment) and t.strip().startswith("ir:source")):
-        c.extract()  # 取り込み時に先頭へ書き直す。古いものが残ると Source が食い違う
-    sanitize(soup)
-    body = soup.find("body")
-    return BeautifulSoup(body.decode_contents(), "html.parser") if body else soup
-
-
-def lift_headings(soup) -> int:
-    """p の中にある見出しを p の外に出す。戻り値は外に出した数。
-
-    見出しはカードにしない。p の中に見出しがあると、その p のカードの中身になってしまう。
-    ブラウザも p の中の見出しの開始タグで p を閉じる（BLOCK_TAGS）。
-    Readability は見出しだけを持つ div を p に替える（DIV を P にする判定の要素に見出しが無い）ので、
-    本文だけを取り出した文書によく出る。p の直下の子を順に見て、見出しを含む子はそのまま外に出し、
-    その前後の中身は元の p と同じ属性の p に入れる。空白と <br> だけになる p は作らない。
-    """
-    n = 0
-    for p in soup.find_all("p"):
-        if p.parent is None or not p.find(_HEADINGS):
-            continue
-        parts, run = [], []
-        for c in list(p.contents):
-            c = c.extract()
-            if isinstance(c, Tag) and (c.name in _HEADINGS or c.find(_HEADINGS)):
-                parts += [("p", run), ("h", c)]
-                run = []
-                n += 1
-            else:
-                run.append(c)
-        parts.append(("p", run))
-        for kind, x in parts:
-            if kind == "h":
-                p.insert_before(x)
-                continue
-            box = soup.new_tag("p", attrs=dict(p.attrs))
-            for c in x:
-                box.append(c)
-            if _has_content(box):
-                p.insert_before(box)
-        p.decompose()
-    return n
-
-
-def _is_container(el) -> bool:
-    """取り込みで外す入れ物か。CONTAINER_TAGS の要素で、直下にブロックを持つもの。
-
-    直下に文字しか無い div（取り込みダイアログが題の下に置く著者と日付の行など）はブロックとして残す。
-    """
-    return (isinstance(el, Tag) and el.name in CONTAINER_TAGS
-            and any(_is_block(c) for c in el.children))
-
-
-def _wrap_runs(soup, parent) -> None:
-    """parent の直下で、ブロックの間にある文字と inline の要素の並びを p に入れる（空白とコメントだけの並びは除く）。
-
-    Readability が div の中の文字に対してするのと同じ（Readability.js の _grabArticle）。
-    """
-    run = []
-
-    def flush():
-        if any(not isinstance(n, Comment) and not _is_blank(n) for n in run):
-            p = soup.new_tag("p")
-            run[0].insert_before(p)
-            for n in run:
-                p.append(n.extract())
-        run.clear()
-
-    for c in list(parent.contents):
-        if _is_block(c):
-            flush()
-        else:
-            run.append(c)
-    flush()
-
-
-def segment(soup: BeautifulSoup) -> list:
-    """入れ物を外して文書をブロックの並びにし、カードのブロックを <div data-ir="pN"> で包む。包んだ div のリストを返す。
-
-    1. 根を決める。文書が入れ物 1 個だけなら、その中へ降りる（lang などの属性を持つ外側の要素を残すため）。
-    2. 根の直下の入れ物（_is_container）を外し、その中身を根の直下に出す。中の入れ物も同じく外す。
-       ブロックの間の文字は p に入れる（_wrap_runs）。
-    3. 根の直下の CARD_TAGS（p とリスト）で、中身（文字か画像など）のあるものを、文書順に 1 個ずつ div で包み、ID を振る。
-       ほかのブロック（見出し、pre、blockquote、表、図、hr など）はそのまま残り、カードにならない。
-    """
-    root = soup
-    while True:
-        kids = [c for c in root.contents if not isinstance(c, Comment) and not _is_blank(c)]
-        if len(kids) == 1 and _is_container(kids[0]):
-            root = kids[0]
-        else:
-            break
-    while any(_is_container(c) for c in root.children):
-        for c in list(root.children):
-            if _is_container(c):
-                _wrap_runs(soup, c)
-                c.unwrap()
-    _wrap_runs(soup, root)
-    units = []
-    for c in list(root.children):
-        if isinstance(c, Tag) and c.name in CARD_TAGS and _has_content(c):
-            box = soup.new_tag("div")
-            box["data-ir"] = f"p{len(units) + 1}"
-            c.wrap(box)
-            units.append(box)
-    return units
+    for para in prepared["paragraphs"]:  # 文書順。作成順が position を決める
+        _add_note(col, PARA_MODEL, docid, para["id"], para["html"], deck_id)
+    return len(prepared["paragraphs"])
 
 
 DATA_URI_RE = re.compile(r"^data:([\w.+-]+/[\w.+-]+);base64,(.*)$", re.DOTALL)
@@ -472,24 +319,6 @@ def _ext_for(mime: str) -> str:
     return re.sub(r"[^a-z0-9]", "", sub.lower()) or "bin"
 
 
-_WEB_SRC_RE = re.compile(r"^(https?:)?//", re.I)
-
-
-def web_src(img) -> str:
-    """img の src が web のアドレス（http:、https: か // で始まる）なら、そのアドレス（// には https: を補う）。違えば空文字。"""
-    src = img.get("src", "").strip()
-    if not _WEB_SRC_RE.match(src):
-        return ""
-    return "https:" + src if src.startswith("//") else src
-
-
-def web_images(html: str) -> list:
-    """取り込む文書（prepare_article の結果）の web の画像のアドレス。文書順で、同じアドレスは 1 回。
-    取り込みダイアログが取り込みの前にダウンロードする（store_images の fetched）。"""
-    soup, _units = prepare_article(html)
-    return list(dict.fromkeys(filter(None, map(web_src, soup.find_all("img")))))
-
-
 def _data_image(src: str):
     """src が base64 の data: なら (中身, MIME)。違うか、中身が壊れているか空なら None。"""
     m = DATA_URI_RE.match(src.strip())
@@ -502,31 +331,20 @@ def _data_image(src: str):
     return (data, m.group(1)) if data else None
 
 
-def store_images(col: Collection, soup, docid: str, fetched: dict, size_of) -> None:
-    """文書の画像を media のファイルに書き出し、src をそのファイル名にする（2026-11-02、Pilcrow の取り込みにそろえた）。
+def store_images(col: Collection, docid: str, images: list, fetched: dict, size_of) -> dict:
+    """文書の画像を media のファイルに書き出す。戻り値は import.js の irPlaceImages に渡す placed（画像の元の src →
+    {"src": ファイル名, "width", "height"}）。
 
-    書き出すのは、埋め込みの画像（base64 の data:）と、ダウンロードした web の画像（fetched。web_src のアドレス →
-    (中身, MIME)）。文書がネットワークなしで読め、カードは画像を media から読む。同じ中身は 1 ファイルにまとめる。
-    ファイル名は _ir2_<docid>_0001.png のように文書順に番号を振る。アンダースコア始まりなので Check Media の未使用の
-    判定から外れる。size_of(中身) が大きさを返せば width と height を付ける（_set_size）。
-    書き出せない画像（ダウンロードできなかったもの、壊れた base64）は src が元のまま残る。
-
-    web の画像と、読める埋め込みの画像は、書き出せたかどうかによらず srcset と sizes、入っている <picture> の <source>
-    を外す（Pilcrow の irPrepare と同じ）。ブラウザはそれらと src から候補を 1 つだけ選び、それが読めなくてもほかの候補を
-    試さない（Qt WebEngine 6.11 で確かめた）。外すと、書き出した画像はそのファイルが、書き出せなかった画像は取り込みが
-    試した src が出る。ほかの画像（相対のアドレス、base64 でない data:、壊れた base64 など）は何も変えない。
+    images は irPrepare が挙げた画像の src（埋め込みの data: と web のアドレス。文書順）。fetched はダウンロードした
+    web の画像（アドレス → (中身, MIME)）。文書がネットワークなしで読め、カードは画像を media から読む。同じ中身は
+    1 ファイルにまとめる。ファイル名は _ir2_<docid>_0001.png のように文書順に番号を振る。アンダースコア始まりなので
+    Check Media の未使用の判定から外れる。size_of(中身) が大きさ（幅, 高さ）を返せば width と height も渡す。
+    書き出せない画像（ダウンロードできなかったもの、壊れた base64）は placed に入らず、src が元のまま残る。
     """
     stored: dict[str, tuple] = {}  # 中身のハッシュ → (ファイル名, 大きさ)
-    for img in soup.find_all("img"):
-        url = web_src(img)
-        image = fetched.get(url) or _data_image(img.get("src", ""))
-        if not url and image is None:
-            continue
-        for a in ("srcset", "sizes"):
-            img.attrs.pop(a, None)
-        if img.parent is not None and img.parent.name == "picture":
-            for source in img.parent.find_all("source", recursive=False):
-                source.decompose()
+    placed = {}
+    for src in images:
+        image = fetched.get(src) or _data_image(src)
         if image is None:
             continue
         data, mime = image
@@ -537,32 +355,8 @@ def store_images(col: Collection, soup, docid: str, fetched: dict, size_of) -> N
                 f.write(data)
             stored[digest] = name, size_of(data)
         name, size = stored[digest]
-        img["src"] = name
-        if size:
-            _set_size(img, size)
-
-
-def _length(value) -> float:
-    """width か height の属性の値が正の数ならその数。無いか、数でない（100% など）か 0 なら 0。"""
-    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*", value or "")
-    return float(m.group(1)) if m else 0
-
-
-def _set_size(img, size: tuple) -> None:
-    """img に width と height を付ける。カードは画像が読み込まれる前からその場所を取り、読み込みで文書がずれない
-    （card.css の height: auto）。記事が両方を書いていればそのまま、片方だけなら他方を画像の縦横比から、どちらも無ければ
-    size（画像の画素数）にする。片方だけで数でない（100% など）ときは、記事の書いたとおりにして何も足さない（Pilcrow の
-    irPlaceImages と同じ）。"""
-    if img.has_attr("width") and img.has_attr("height"):
-        return
-    w, h = _length(img.get("width")), _length(img.get("height"))
-    iw, ih = size
-    if w:
-        img["height"] = str(round(w * ih / iw))
-    elif h:
-        img["width"] = str(round(h * iw / ih))
-    elif not img.has_attr("width") and not img.has_attr("height"):
-        img["width"], img["height"] = str(iw), str(ih)
+        placed[src] = {"src": name, **({"width": size[0], "height": size[1]} if size else {})}
+    return placed
 
 
 # ---------------------------------------------------------------- 取り込むファイルとページの読み方
@@ -631,13 +425,8 @@ PLAIN_TEXT_EXTS = (".txt", ".text")
 MARKDOWN_EXTS = (".md", ".markdown")
 
 
-def text_to_html(text: str) -> str:
-    """平文を段落の HTML に起こす。空行で段落を区切る（改行は article_html が \n にそろえる）。"""
-    return "".join(f"<p>{html.escape(b.strip(), quote=False)}</p>" for b in text.split("\n\n") if b.strip())
-
-
 def markdown_to_html(text: str) -> str:
-    """Markdown を HTML に変換する（改行は article_html が \n にそろえる）。以後はほかの HTML と同じに扱う（prepare_article など）。
+    """Markdown を HTML に変換する。以後は import.js がほかの HTML と同じに扱う（Readability は通さない）。
 
     Anki に同梱の Python-Markdown（26.09.2 では 3.10.3）を使い、同梱の extra 拡張（表、``` の囲みのコード、
     脚注、定義リストなど）を有効にする。見出しは h1〜h6 になりカードにならない。段落、リストの項目、
@@ -645,6 +434,7 @@ def markdown_to_html(text: str) -> str:
     取り込みでスクリプトを動かしうるものは外れる（sanitize）。
     """
     import markdown  # Anki の同梱。aqt を読み込む前でも使えるよう、ここで読む
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     return markdown.markdown(text, extensions=["extra"], output_format="html")
 
 
@@ -654,18 +444,17 @@ def is_markdown_name(name: str) -> bool:
 
 
 def article_html(text: str, name: str) -> tuple:
-    """取り込む文字列を HTML にする。name はファイル名か URL のパス。戻り値は (HTML, 平文か Markdown だったか)。
+    """取り込む文字列と、その種類（import.js の irImport の kind）。name はファイル名か URL のパス。戻り値は (文字列, 種類)。
 
-    Markdown の拡張子なら Markdown として変換し、平文の拡張子か、< を含まない文字列なら平文として段落に起こす。
-    これらはアドオンが起こした HTML で、取り出す本文も周りも無いので、取り込みダイアログは Readability を通さない。
-    それ以外は HTML のまま返す（取り込みダイアログが Readability で本文を取り出す）。URL とファイルの両方がこれを使う。
+    Markdown の拡張子なら HTML に変換して markdown、平文の拡張子か、< を含まない文字列なら平文のまま text（irImport が
+    空行で段落に分ける）、それ以外は HTML のまま html（irImport が Readability で本文を取り出す）。URL とファイルの両方が
+    これを使う。Pilcrow も同じ決め方（DocumentImport.swift の kind）。
     """
-    lines = text.replace("\r\n", "\n").replace("\r", "\n")   # 平文と Markdown の改行をそろえる
     if is_markdown_name(name):
-        return markdown_to_html(lines), True
+        return markdown_to_html(text), "markdown"
     if name.lower().endswith(PLAIN_TEXT_EXTS) or "<" not in text:
-        return text_to_html(lines), True
-    return text, False
+        return text, "text"
+    return text, "html"
 
 
 def read_article_file(path: str) -> tuple:
@@ -692,19 +481,19 @@ body.night_mode { background: #2c2c2c; }
 """
 
 
-def preview_html(soup, night: bool = False) -> str:
-    """取り込みダイアログのプレビューのページ。
+def preview_html(prepared: dict, night: bool = False) -> str:
+    """取り込みダイアログのプレビューのページ。prepared は import.js が作った文書（画像はまだ元の src）。
 
     取り込まれる文書全体を、カードと同じ CSS で、薄くせずに出す。カードになる段落
     （data-ir を持つ要素）には点線の枠と ID を付ける。見出しや図は表示されるが枠は付かない。
     """
-    n = len(soup.find_all(attrs={"data-ir": True}))
+    n = len(prepared["paragraphs"])
     head = (f'<div class="ir-preview-head">{plural(n, "paragraph")} '
             f'(one card each, in this order). Dashed boxes are paragraphs; '
             f'everything else is shown on the cards but gets no card.</div>')
     return ('<!doctype html><html><head><meta charset="utf-8"><style>' + _css() + _PREVIEW_CSS
             + '</style></head><body class="card' + (" night_mode" if night else "") + '">'
-            + head + '<div id="ir-doc" class="ir-preview">' + str(soup) + '</div></body></html>')
+            + head + '<div id="ir-doc" class="ir-preview">' + prepared["html"] + '</div></body></html>')
 
 
 # ---------------------------------------------------------------- ノートタイプとテンプレート
@@ -1683,13 +1472,17 @@ def doc_snippet(col: Collection, docid: str, n: int = 60) -> str:
     return ""
 
 
-def shared_paragraphs(col: Collection, units) -> list:
-    """取り込もうとしている文書（prepare_article の段落の要素のリスト）の段落のうち、取り込み済みの文書の原本にも
-    ある段落の数。戻り値は (DocId, 共通の段落の数) のリストで、数の多い順（同じなら古い順）。1 個も無い文書は入れない。
+def prepared_texts(prepared: dict) -> set:
+    """取り込もうとしている文書（import.js が作ったもの）の、文字のある段落の文字の集合。"""
+    return para_texts(BeautifulSoup(p["html"], "html.parser") for p in prepared["paragraphs"])
+
+
+def shared_paragraphs(col: Collection, texts: set) -> list:
+    """取り込もうとしている文書の段落の文字（prepared_texts）のうち、取り込み済みの文書の原本にもある段落の数。
+    戻り値は (DocId, 共通の段落の数) のリストで、数の多い順（同じなら古い順）。1 個も無い文書は入れない。
 
     比べるのは段落の文字（para_text）が完全に同じかどうか。全部の段落が同じでなくても数える。
     """
-    texts = para_texts(units)
     if not texts:
         return []
     out = []
