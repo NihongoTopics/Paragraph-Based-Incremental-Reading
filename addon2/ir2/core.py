@@ -146,7 +146,12 @@ def _clip(text: str, n: int) -> str:
 # ---------------------------------------------------------------- 文書のファイル
 
 def doc_path(col: Collection, docid: str, orig: bool = False) -> str:
-    """文書のファイル。orig なら原本。"""
+    """文書のファイル。orig なら原本。
+
+    文書のファイルはほかに、取り込みが書き出した画像（_ir2_<docid>_0001.png など。store_images）と、Pilcrow が文書に
+    付ける PDF（_ir2_<docid>.pdf）がある。アドオンは PDF を作らず、変えず、消さない（アンダースコア始まりなので Anki の
+    Check Media も触らない）。
+    """
     suffix = ".orig.html" if orig else ".html"
     return os.path.join(col.media.dir(), f"_ir2_{docid}{suffix}")
 
