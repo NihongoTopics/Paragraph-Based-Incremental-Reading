@@ -55,8 +55,9 @@ def _available() -> bool:
 
 
 def _deck_id() -> int:
+    """表示中のカードから作るノートのデッキ。カードの元のデッキ（core.home_deck。フィルターデッキの中でも Tier）。"""
     card = mw.reviewer.card
-    return card.did if card else mw.col.decks.current()["id"]
+    return core.home_deck(card) if card else mw.col.decks.current()["id"]
 
 
 def _discard_undo() -> None:
@@ -133,7 +134,7 @@ def _on_draft(docid: str, anchor: str, payload: str):
     """Create → Basic などで書いている欄の今の中身。表示中の段落のカードのノートとデッキを一緒に覚える。"""
     card = mw.reviewer.card
     _draft.clear()
-    _draft.update(json.loads(payload), docid=docid, anchor=anchor, nid=card.nid, did=card.did)
+    _draft.update(json.loads(payload), docid=docid, anchor=anchor, nid=card.nid, did=_deck_id())
 
 
 def _on_extract(docid: str, anchor: str, inner_html: str):

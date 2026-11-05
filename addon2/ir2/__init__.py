@@ -3,6 +3,7 @@
 
   core.py       aqt に依存しない層（文書、ノート、テンプレート）。GUI なしで pylib (anki) だけで動作確認できる。
   card.js       カードのテンプレートに入れる JS（文書の表示、段落の編集）。card.css はカードの CSS。
+  import.js     取り込みで記事を文書の形にする JS（importer.py が見えないページで動かす）。Pilcrow と同じファイル。
   reviewer.py   学習画面との接続（カードの JS からの pycmd の受け口、評価の前後の処理）と PBIR メニュー。
   documents.py  表示中のカードの文書に対するメニューの操作と New Deck。
   importer.py   取り込みダイアログと Check Duplicates。

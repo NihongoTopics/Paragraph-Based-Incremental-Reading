@@ -4,7 +4,7 @@
 
 使い方: check.py OUT.html [--work WORK] [--render] [--max-segments 40]
 
-- アドオンの取り込みの規則の写し（ir_rules.py の prepare_article。取り込みダイアログと取り込みが使う関数と同じもの）で読み、
+- アドオンの取り込みの規則の写し（ir_rules.py の prepare_article。アドオンの取り込みの import.js の irPrepare と同じ規則）で読み、
   カード（文書の直下の <div data-ir>）を数える。取り込みで形が変わるもの（段落の中のブロック、p の中の見出し）を知らせる。
   取り込みダイアログは HTML のファイルを先に Readability に通すが、写しには Readability は無い。出力が記事の本文だけなら
   Readability はそれを残し、題の h1 を外して、題（と著者の行）を本文の前に置き直す（2026-10-16 に確かめた）。
