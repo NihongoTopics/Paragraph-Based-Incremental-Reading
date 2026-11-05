@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """アドオン Paragraph-Based Incremental Reading の取り込みの規則の写し。pdf-to-ir-html がアドオンの無い環境でも動くように、スキルの中に持つ。
 
-写し元: addon2/ir2/core.py と addon2/ir2/card.css。
+写し元: addon2/ir2/core.py（c837b57 まで、取り込みの規則が Python にあったときのもの）と addon2/ir2/card.css。
 取り込みの正規化とカードの判定（normalize, lift_headings, segment をまとめた prepare_article）、取り込みダイアログのプレビュー（preview_html）、
 それらが使う定数を、関数と定数の単位でそのまま写した（ast で取り出した。書き換えていない）。カードの CSS の _css は、アドオンでは
 card.css を読む関数なので、card.css の中身を返す関数にした。
-アドオンの取り込みの規則が変わったら、写し直す。
+いまのアドオンは、同じ規則を addon2/ir2/import.js の irPrepare（Pilcrow と同じファイル）でブラウザの中で動かす。ブラウザは p の中の
+見出しの開始タグで p を閉じるので、ここの lift_headings はそれを写したものに当たる。Markdown は今は平文として取り込む。
+import.js の規則が変わったら、ここも合わせて直す。
 """
 
 import re

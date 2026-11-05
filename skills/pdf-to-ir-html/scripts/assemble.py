@@ -7,7 +7,7 @@
   --lang   文書の主な言語（BCP 47）。全体を包む <article lang="..."> に付く。
 
 出力は <article> 1 個だけ（<html>, <head>, <title>, <body> は書かない）。取り込みは body の中身だけを使い
-（core.normalize）、文字コードは宣言が無くても UTF-8 として読む（core.decode_text）。取り込みで残らないもの
+（取り込みの import.js の irPrepare）、文字コードは宣言が無くても UTF-8 として読む（core.decode_text）。取り込みで残らないもの
 （style、class、Readability の表示用の属性）は出力に書かない。check.py が確かめる。
 
 すること:
@@ -43,7 +43,7 @@ from bs4 import BeautifulSoup, Comment, NavigableString, Tag  # noqa: E402
 import ir_rules as rules  # noqa: E402  アドオンの取り込みの規則の写し
 import tex2mml  # noqa: E402
 
-CARD_TAGS = ("p", "ul", "ol", "dl")          # 文書の直下でカードになるブロック（アドオンの core.segment）
+CARD_TAGS = ("p", "ul", "ol", "dl")          # 文書の直下でカードになるブロック（アドオンの import.js の IR_CARD_TAGS）
 BLOCK_KIDS = ("p", "li", "blockquote", "pre")  # 中にこれがある blockquote は、続きをつなぐとき入れ物として扱う
 HEADINGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 FLOATS = ("aside", "figure", "table")      # 前のページの段落の後にあってよいもの（続きをつなぐとき飛ばす）
