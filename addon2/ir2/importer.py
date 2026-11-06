@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
@@ -12,7 +13,7 @@ from aqt import mw
 from aqt.operations import QueryOp
 from aqt.qt import (
     QBuffer, QByteArray, QDialog, QDialogButtonBox, QEvent, QFileDialog, QFormLayout, QHBoxLayout, QImageIOHandler,
-    QImageReader, QIODevice, QLabel, QLineEdit, QMenu, QObject, QPushButton, QTimer, QUrl, QWebEnginePage,
+    QImageReader, QIODevice, QLabel, QLineEdit, QMenu, QObject, QPushButton, QSizePolicy, QTimer, QUrl, QWebEnginePage,
     QWebEngineSettings, QWebEngineView, QWidget, Qt,
 )
 from aqt.theme import theme_manager
@@ -31,10 +32,33 @@ def _button(text: str, on_click=None) -> QPushButton:
     return b
 
 
+class _WrapLabel(QLabel):
+    """折り返す文字の欄。中身の長さでダイアログの幅を広げない。
+
+    Qt の折り返しは空白などでしか切れないので、長い URL やファイル名がそのまま欄の最小の幅になり、左半分が
+    広がってプレビューを押しつぶしていた。そこで横の大きさは中身から決めず（Ignored）、URL やパスの区切り
+    （/ ? & = など）のあとに幅の無い空白（U+200B）を入れてそこで切れるようにする。それでも収まらない部分は欄で切れる。
+    文書の題名などをそのまま出すので、HTML としては読まない（PlainText）。
+    """
+
+    _BREAK_AFTER = re.compile(r"([/?&=#_.,:;-])(?=\S)")
+
+    def __init__(self, text: str = ""):
+        super().__init__()
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setWordWrap(True)
+        policy = self.sizePolicy()  # setWordWrap が付けた heightForWidth を残す
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        self.setSizePolicy(policy)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        super().setText(self._BREAK_AFTER.sub("\\1\u200b", text))
+
+
 def _warning_label() -> QLabel:
     """取り込みダイアログの重複の警告。_show_lines で出す。"""
-    label = QLabel()
-    label.setWordWrap(True)
+    label = _WrapLabel()
     label.hide()
     return label
 
@@ -195,6 +219,8 @@ class ImportDialog(QDialog):
 
         left = QWidget()
         form = QFormLayout(left)
+        # macOS の既定（FieldsStayAtSizeHint）では URL 欄が狭いままになる。欄を左半分の幅いっぱいに広げる
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.url = QLineEdit()
         self.url.setPlaceholderText("https://...")
         self.url.textChanged.connect(self._url_changed)
@@ -207,8 +233,7 @@ class ImportDialog(QDialog):
         self._fetch_timer = QTimer(self)
         self._fetch_timer.setSingleShot(True)
         self._fetch_timer.timeout.connect(self._fetch_now)
-        self.file_label = QLabel("No file chosen")
-        self.file_label.setWordWrap(True)
+        self.file_label = _WrapLabel("No file chosen")
         choose = _button("Choose File ...", self.choose_file)
         # ファイルを外すため。ファイルを選んでいるときだけ出す
         self.remove_file = _button("Remove", self.clear_file)
@@ -230,13 +255,14 @@ class ImportDialog(QDialog):
         current = mw.col.decks.current()
         self._deck_id, self._deck_name = current["id"], current["name"]
         self.deck = _button(menu_text(self._deck_name))
+        # 欄を広げる設定（AllNonFixedFieldsGrow）でも、デッキのボタンは名前の幅のまま
+        self.deck.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         deck_menu = QMenu(self.deck)
         deck_menu.aboutToShow.connect(
             lambda: fill_deck_menu(deck_menu, {self._deck_id}, self._pick_deck))
         self.deck.setMenu(deck_menu)
         form.addRow("Deck", self.deck)
-        self.summary = QLabel()
-        self.summary.setWordWrap(True)
+        self.summary = _WrapLabel()
         form.addRow(self.summary)
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
