@@ -11,7 +11,11 @@ The article itself is kept once, in a document file in Anki's media folder. Ever
 
 ## Installing
 
-Copy the folder `addon2/ir2` into Anki's add-ons folder (in Anki, Tools → Add-ons → View Files opens it) and restart Anki. The PBIR menu appears in the menu bar.
+1. Download `Paragraph-Based-Incremental-Reading.ankiaddon` from the [latest release](https://github.com/NihongoTopics/Paragraph-Based-Incremental-Reading/releases/latest).
+2. In Anki, open Tools → Add-ons → Install from file... and choose the downloaded file (or double-click the file).
+3. Restart Anki. The PBIR menu appears in the menu bar.
+
+To install from the source instead, copy the folder `addon2/ir2` into Anki's add-ons folder (in Anki, Tools → Add-ons → View Files opens it) and restart Anki.
 
 The add-on is developed with Anki 26.09.2 on macOS. It is made for the desktop version of Anki; showing its cards in AnkiDroid and AnkiMobile is not supported.
 
