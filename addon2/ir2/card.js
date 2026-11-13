@@ -41,8 +41,10 @@
   // （sendStructural）に呼ぶ。Extract と Merge のあとに Anki の描画し直し（reviewer の
   // _redraw_current_card）を使わないのは、それが下の欄の時計を 0 に戻し、音声を流し直し、
   // 自動で答えへ進む待ち時間を始め直すため（2026-10-09）。
+  // keep は保つスクロール位置（window.scrollY）。Extract と Merge は文書をその場で変える操作なので、読んでいる位置を
+  // 動かさない。カードを出したときは渡さず、対象の段落を中央に出す（placeTarget）。
   render();
-  function render() {
+  function render(keep) {
     return loadDoc().then(function (html) {
       // 読み込み中に次の描画（回答画面など）で差し替えられていたら何もしない。
       // 古い段落に window._ir2Cmd が向くのを防ぐ。
@@ -87,7 +89,7 @@
       root.innerHTML = '';
       if (warn) root.appendChild(warn);
       root.appendChild(doc);
-      centerTarget(doc, target);
+      placeTarget(doc, target, keep);
       setupEdit(target);
     }).catch(function (err) {
       // フォールバック表示のまま。黙って落ちると原因が分からないので、理由を画面に出す
@@ -103,22 +105,29 @@
   // 段落の中の画像が読み込まれると段落が伸び、中央からずれた。
   // 出し直すのは、利用者が自分で動かす（ホイール、タッチ、キー、クリック）か、PBIR のメニューを使うか、
   // 次の描画に替わるまで。そのあとは読んでいる位置を動かさない
-  function centerTarget(doc, target) {
-    if (window._ir2StopCenter) window._ir2StopCenter();
-    target.scrollIntoView({block: 'center'});
+  // keep があれば（Extract と Merge のあと。render）、中央に出す代わりにそのスクロール位置に戻し、同じように戻し直す。
+  // 描画し直した直後は上の画像がまだ高さを持たず、文書が短い。画像が読み込まれ終わると、操作した所より上は前と同じ
+  // 高さになるので、同じスクロール位置が同じ場所を指す。
+  function placeTarget(doc, target, keep) {
+    if (window._ir2StopPlacing) window._ir2StopPlacing();
+    function place() {
+      if (keep === undefined) target.scrollIntoView({block: 'center'});
+      else window.scrollTo(window.scrollX, keep);
+    }
+    place();
     if (!window.ResizeObserver) return;
     var USER_EVENTS = ['wheel', 'touchstart', 'keydown', 'mousedown'];
     var ro = new ResizeObserver(function () {
-      if (document.body.contains(target)) target.scrollIntoView({block: 'center'});
+      if (document.body.contains(target)) place();
       else stop();
     });
     function stop() {
       ro.disconnect();
       USER_EVENTS.forEach(function (t) { window.removeEventListener(t, stop, true); });
-      if (window._ir2StopCenter === stop) window._ir2StopCenter = null;
+      if (window._ir2StopPlacing === stop) window._ir2StopPlacing = null;
     }
     USER_EVENTS.forEach(function (t) { window.addEventListener(t, stop, true); });
-    window._ir2StopCenter = stop;
+    window._ir2StopPlacing = stop;
     ro.observe(doc);
   }
 
@@ -174,8 +183,8 @@
     };
     document.addEventListener('selectionchange', window._ir2SelHandler);
     window._ir2Cmd = function (cmd, arg) {
-      // メニューの操作（Create で問いの欄を出すなど）で段落の高さが変わっても、中央に出し直さない（centerTarget）
-      if (window._ir2StopCenter) window._ir2StopCenter();
+      // メニューの操作（Create で問いの欄を出すなど）で段落の高さが変わっても、中央に出し直さない（placeTarget）
+      if (window._ir2StopPlacing) window._ir2StopPlacing();
       if (quiz) return;   // Create → Basic などを開いている間。段落の操作はしない（quiz を作るのはカードを離れるとき）
       if (cmd === 'source') { setSource(target, !!arg); return; }
       // 以下は描画された段落に対する操作。PBIR → Create は回答面だけ、ほかは問題面だけ
@@ -375,7 +384,7 @@
     pycmd('ir2:' + cmd + ':' + docid + ':' + para + ':' + (arg ? arg + ':' : '') +
           encodeURIComponent(html), function (res) {
       structBusy = false;
-      if (res === 'ok') { render(); return; }
+      if (res === 'ok') { render(window.scrollY); return; }
       if (editable) { target.setAttribute('contenteditable', 'true'); target.focus(); }
       pushState(target);
     });
