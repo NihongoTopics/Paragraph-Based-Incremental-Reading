@@ -6,7 +6,7 @@ import os
 import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from aqt import mw
@@ -567,12 +567,39 @@ def _dropped_file(mime):
 
 
 _USER_AGENT = "Mozilla/5.0 (Anki PBIR addon)"
+# URL の中で % 表記にしない ASCII の記号（区切りと、すでに % 表記になっている部分の %）。英数字と _ . - ~ は quote が残す
+_URL_SAFE = "!#$%&'()*+,/:;=?@[]"
+
+
+def ascii_url(url: str) -> str:
+    """url を ASCII だけの形にする。ホスト名の ASCII でない文字は Punycode に、ほかの ASCII でない文字と空白は UTF-8 の
+    % 表記にする（ブラウザがアドレスを送るときと同じ）。すでに ASCII だけの URL は変わらない。
+
+    urlopen は ASCII でない文字や空白のある URL を読めない（https://ja.wikipedia.org/wiki/猫 は UnicodeEncodeError、
+    空白は InvalidURL。Anki 26.09.2 の Python 3.13 で確かめた）。日本語のページのアドレスや、記事の中の画像のアドレスには
+    そういうものがある。Referer のヘッダも同じ（ヘッダは latin-1 でしか送れない）。
+    """
+    parts = urlsplit(url.strip())
+    netloc = parts.netloc
+    if not netloc.isascii():
+        try:
+            netloc = netloc.encode("idna").decode("ascii")
+        except UnicodeError:
+            netloc = quote(netloc, safe=_URL_SAFE)
+    return urlunsplit((parts.scheme, netloc, *(quote(p, safe=_URL_SAFE) for p in parts[2:])))
+
+
+def _request(url: str, referer: str = "") -> Request:
+    """url を読むための Request。url と referer は ASCII の形にする（ascii_url）。"""
+    headers = {"User-Agent": _USER_AGENT}
+    if referer:
+        headers["Referer"] = ascii_url(referer)
+    return Request(ascii_url(url), headers=headers)
 
 
 def fetch_url(url: str) -> str:
     """URL を読み、文字列にする。文字コードの決め方は core.decode_text（ファイルと同じ）。"""
-    req = Request(url, headers={"User-Agent": _USER_AGENT})
-    with urlopen(req, timeout=30) as r:
+    with urlopen(_request(url), timeout=30) as r:
         ctype = (r.headers.get_content_type() or "").lower()
         data = r.read()
         # 平文（種類か拡張子で。ファイルと同じく拡張子でも決める）では <meta> を探さない
@@ -591,11 +618,8 @@ def fetch_images(urls: list, referer: str) -> dict:
 def _fetch_image(url: str, referer: str):
     """url の画像の (中身, MIME)。2xx の答えで（urlopen はほかの答えで HTTPError を出す）、MIME が image/* か、
     Qt が画像として読めるものだけ。それ以外は None。"""
-    headers = {"User-Agent": _USER_AGENT}
-    if referer:
-        headers["Referer"] = referer
     try:
-        with urlopen(Request(url, headers=headers), timeout=30) as r:
+        with urlopen(_request(url, referer), timeout=30) as r:
             mime, data = r.headers.get_content_type().lower(), r.read()
     except Exception:  # noqa: BLE001  画像が取れなくても取り込みは続ける
         return None

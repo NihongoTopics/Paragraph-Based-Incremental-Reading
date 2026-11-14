@@ -517,19 +517,30 @@ def ensure_models(col: Collection) -> None:
         col.models.add(m)
 
 
-def update_models(col: Collection) -> None:
+def update_models(col: Collection) -> int:
     """あるアドオンのノートタイプのテンプレートと CSS を今の内容にする（起動時）。テンプレートはノートタイプを作ったときに
-    書かれたきりなので、アドオンの更新をコレクションへ届けるにはこれが要る。"""
+    書かれたきりなので、アドオンの更新をコレクションへ届けるにはこれが要る。戻り値は書き換えたノートタイプの数。
+
+    今の内容と同じノートタイプは書かない。書くと、中身が同じでも Anki はノートタイプを変更済みにし（更新時刻が変わり、
+    次の同期で 6 個のノートタイプを送る）、Edit メニューに Undo Update Note Type が出る（26.09.2 の pylib で確かめた）。
+    起動のたびにそうなっていた。
+    """
+    n = 0
     for name, spec in _model_specs().items():
         m = col.models.by_name(name)
-        if m:
-            _set_template(m, spec)
+        if m and _set_template(m, spec):
             col.models.update_dict(m)
+            n += 1
+    return n
 
 
-def _set_template(m: dict, spec: _ModelSpec) -> None:
-    m["tmpls"][0]["qfmt"], m["tmpls"][0]["afmt"] = spec.front, spec.back
-    m["css"] = _css()
+def _set_template(m: dict, spec: _ModelSpec) -> bool:
+    """ノートタイプ m のテンプレートと CSS を spec のものにする。戻り値は変えたか。"""
+    tmpl, new = m["tmpls"][0], (spec.front, spec.back, _css())
+    if (tmpl["qfmt"], tmpl["afmt"], m["css"]) == new:
+        return False
+    tmpl["qfmt"], tmpl["afmt"], m["css"] = new
+    return True
 
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -683,9 +694,9 @@ def save_edit(col: Collection, docid: str, anchor: str, inner_html: str) -> tupl
     書き戻しは ID を持つ要素の innerHTML の置き換え。
     戻り値は (更新したノート数, 利用者への知らせのリスト)。
     """
-    soup, _el, msgs = _with_para(col, docid, anchor, inner_html)
+    soup, el, msgs = _with_para(col, docid, anchor, inner_html)
     write_doc(col, docid, str(soup))
-    return regen_notes(col, docid, anchor), msgs
+    return regen_notes(col, docid, anchor, el), msgs
 
 
 def para_source(col: Collection, docid: str, anchor: str) -> str:
@@ -693,13 +704,15 @@ def para_source(col: Collection, docid: str, anchor: str) -> str:
     return _doc_para(col, docid, anchor).decode_contents()
 
 
-def regen_notes(col: Collection, docid: str, anchor: str) -> int:
+def regen_notes(col: Collection, docid: str, anchor: str, el=None) -> int:
     """指定段落に紐づくノート（段落ノート、その段落内の cloze ノート、その段落の quiz のノート）の
     Text を作り直す。利用者が書くフィールド（Question と Answer など）は文書から作るものではないので触らない。
 
-    Text は文書から一方向に作る。
+    Text は文書から一方向に作る。el は文書の中のその段落の要素。文書を書いたばかりの呼び出し側は、書いた soup の要素を渡す
+    （文書を読み直さない。大きな文書では読むのに時間がかかる: 1 MB で 0.2 秒）。渡さなければ文書を読む。
     """
-    el = doc_soup(col, docid).find(attrs={"data-ir": anchor})
+    if el is None:
+        el = doc_soup(col, docid).find(attrs={"data-ir": anchor})
     if el is None:
         return 0
     updated = 0
@@ -886,9 +899,9 @@ def _cloze_notes(col: Collection, docid: str, para: str) -> dict:
             if note["AnchorId"].split(".")[0] == para}
 
 
-def next_cloze_id(col: Collection, docid: str, anchor: str) -> str:
-    """その段落で未使用の cloze ID を返す。文書側のマークと既存ノートの両方を見る。"""
-    used = set(_cloze_ids(doc_soup(col, docid)))
+def next_cloze_id(col: Collection, docid: str, anchor: str, soup=None) -> str:
+    """その段落で未使用の cloze ID を返す。文書側のマークと既存ノートの両方を見る。soup は文書（渡さなければ読む）。"""
+    used = set(_cloze_ids(soup if soup is not None else doc_soup(col, docid)))
     used.update(note["AnchorId"] for note in _doc_notes(col, docid, (CLOZE_MODEL,)))
     n = 1
     while f"{anchor}.c{n}" in used:
@@ -898,32 +911,26 @@ def next_cloze_id(col: Collection, docid: str, anchor: str) -> str:
 
 def make_cloze(col: Collection, docid: str, anchor: str, inner_html: str, deck_id: int) -> tuple:
     """PBIR → Create → Cloze。inner_html は段落の中身で、選んだ所に data-cloze="PENDING" の印が 1 個ある。
-    印に未使用の ID を振り（next_cloze_id）、段落を保存し（save_edit）、cloze ノートを 1 件作る（create_cloze）。
+    段落を保存と同じに後始末して文書に入れ（_with_para）、印に未使用の ID を振り（next_cloze_id）、文書を書き、段落のノートの
+    Text を作り直し（regen_notes）、cloze ノートを 1 件作る。文書を読むのは 1 回。
     選んだ語が空（空白や画像だけの選択）なら、何も変えずに断る。戻り値は (cloze の ID, 選んだ語, 隠す出現の数)。
     """
-    cloze_id = next_cloze_id(col, docid, anchor)
     marker = f'data-cloze="{PENDING}"'
     if inner_html.count(marker) != 1:
         raise ValueError(f"expected one new cloze mark, found {inner_html.count(marker)}")
-    inner_html = inner_html.replace(marker, f'data-cloze="{cloze_id}"')
-    word = cloze_word(BeautifulSoup(inner_html, "html.parser"), cloze_id)
+    soup, el, _msgs = _with_para(col, docid, anchor, inner_html)
+    mark = el.find(attrs={"data-cloze": PENDING})
+    if mark is None:
+        raise ValueError("the new cloze mark was not found in the paragraph")
+    word = para_text(mark)
     if not word:
         raise Refused("select a word (the selection has no text)")
-    save_edit(col, docid, anchor, inner_html)
-    nid = create_cloze(col, docid, anchor, cloze_id, deck_id)
-    return cloze_id, word, col.get_note(nid)["Text"].count("{{c1::")
-
-
-def create_cloze(col: Collection, docid: str, anchor: str, cloze_id: str,
-                 deck_id: int) -> int:
-    """文書に書かれた data-cloze マークから cloze ノートを 1 件作る。戻り値は note id。
-
-    マークは先に save_edit で文書へ入っている前提。
-    """
-    el = _doc_para(col, docid, anchor)
-    if el.find(attrs={"data-cloze": cloze_id}) is None:
-        raise KeyError(f"cloze {cloze_id} not found in the document")
-    return _add_note(col, CLOZE_MODEL, docid, cloze_id, cloze_text(el, cloze_id), deck_id)
+    cloze_id = mark["data-cloze"] = next_cloze_id(col, docid, anchor, soup)
+    write_doc(col, docid, str(soup))
+    regen_notes(col, docid, anchor, el)
+    text = cloze_text(el, cloze_id)
+    _add_note(col, CLOZE_MODEL, docid, cloze_id, text, deck_id)
+    return cloze_id, word, text.count("{{c1::")
 
 
 def cloze_word(para_el, cloze_id: str) -> str:
@@ -1277,8 +1284,8 @@ def extract_paragraph(col: Collection, docid: str, anchor: str, inner_html: str,
     for new_el, moved in filter(None, cut):
         _add_note(col, PARA_MODEL, docid, new_el["data-ir"], new_el.decode_contents(), deck_id)
         _reanchor(col, notes, moved)
-        regen_notes(col, docid, new_el["data-ir"])
-    regen_notes(col, docid, anchor)
+        regen_notes(col, docid, new_el["data-ir"], new_el)
+    regen_notes(col, docid, anchor, el)
     return tuple(c and c[0]["data-ir"] for c in cut)
 
 
@@ -1337,7 +1344,7 @@ def merge_paragraph(col: Collection, docid: str, anchor: str, direction: str) ->
             note["AnchorId"] = anchor
             col.update_note(note)
             n_moved += 1
-    regen_notes(col, docid, anchor)
+    regen_notes(col, docid, anchor, el)
     return other_id, n_moved, len(para_nids)
 
 
@@ -1371,13 +1378,14 @@ def remove_empty(col: Collection, docid: str) -> tuple:
     if remove:
         col.remove_notes(remove)
     orphans = [s for s in soup.find_all(attrs={"data-cloze": True}) if s["data-cloze"] not in kept]
-    touched = {s.find_parent(attrs={"data-ir": True})["data-ir"] for s in orphans}
+    # マークはふつう段落の中にある。段落の外にあれば（文書のファイルを手で書き換えたときなど）作り直すノートは無い
+    touched = {p["data-ir"]: p for p in (s.find_parent(attrs={"data-ir": True}) for s in orphans) if p is not None}
     for s in orphans:
         s.unwrap()
     if empty or orphans:
         write_doc(col, docid, str(soup))
-    for anchor in touched:
-        regen_notes(col, docid, anchor)
+    for anchor, el in touched.items():
+        regen_notes(col, docid, anchor, el)
     return sorted(paras, key=_para_num), len(remove), len(orphans)
 
 

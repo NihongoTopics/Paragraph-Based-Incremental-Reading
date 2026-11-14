@@ -89,7 +89,8 @@ def _after_structure_change(msg: str) -> None:
 
 def _on_save(docid: str, anchor: str, inner_html: str):
     n, msgs = core.save_edit(mw.col, docid, anchor, inner_html)
-    tooltip("<br>".join([f"Saved ({n} notes regenerated)"] + msgs))
+    # 知らせには文書の文字が入る（外した cloze の中身）。tooltip は HTML として読むので、文字として出す
+    tooltip("<br>".join(html_lib.escape(m) for m in [f"Saved ({core.plural(n, 'note')} regenerated)"] + msgs))
     # 保存したあとの段落の HTML。Source Text の表示に使う（使わない呼び出しでは捨てられる）
     return core.para_source(mw.col, docid, anchor)
 
@@ -108,7 +109,7 @@ def _on_font(_docid: str, _anchor: str, payload: str):
 
 def _on_note(_docid: str, _anchor: str, text: str):
     """JS からの短い通知。黙って失敗させないためのもの。"""
-    tooltip(text)
+    tooltip(html_lib.escape(text))
 
 
 def _on_state(_docid: str, _anchor: str, payload: str):
