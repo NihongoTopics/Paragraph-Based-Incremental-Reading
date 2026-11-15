@@ -26,7 +26,8 @@
   - <ul type="none"> と <ol type="none"> の type="none" を、直下の各 <li> に移す（ブラウザが番号と記号を付けない。
     ol の type="none" は効かず、li の type="none" は効く）。
 - 下書きの印（data-box, <!--hy?--> などのコメント）とソフトハイフンを外す。
-- 取り込みで問題になる形（段落の中のブロック、figure の外の img など）を調べ、誤りとして止まる。
+- 取り込みで問題になる形（段落の中のブロック、figure の外の img など）と、文書の中のリンク（行き先の無い <a href="#…">、
+  重なった id）を調べ、誤りとして止まる。
 """
 import sys
 sys.dont_write_bytecode = True   # before importing _common, so no __pycache__ is written
@@ -335,8 +336,20 @@ def check_structure(article, P: Problems) -> None:
                 P.error(t, f"event attribute {a} on <{t.name}> (removed on import)")
         if t.name == "tex":
             P.error(t, "<tex> left over")
-        if t.name == "a":
-            P.warn(t, f"link <a> (write URLs as text): {snippet(t)!r}")
+    # 文書の中のリンク（references/markup.md の 13）: <a href="#id"> と、行き先の id
+    ids = {}
+    for t in article.find_all(id=True):
+        if t["id"] in ids:
+            P.error(t, f"id {t['id']!r} is on two elements (a link can go to only one): <{t.name}> {snippet(t)!r}")
+        ids[t["id"]] = t
+    for a in article.find_all("a"):
+        href = a.get("href", "")
+        if not href.startswith("#"):
+            P.warn(a, f"link <a> that does not go to a place in the document (write URLs as text): {snippet(a)!r}")
+        elif href[1:] not in ids:
+            P.error(a, f"link to {href!r}, but no element has id {href[1:]!r}: {snippet(a)!r}")
+        elif a in ids[href[1:]].descendants:
+            P.error(a, f"link to {href!r} from inside the element it goes to: {snippet(a)!r}")
     for p in article.find_all("p"):
         for b in p.find_all(list(rules.BLOCK_TAGS)):
             P.error(b, f"<{b.name}> inside <p> (the import closes the <p> there; what follows becomes another "

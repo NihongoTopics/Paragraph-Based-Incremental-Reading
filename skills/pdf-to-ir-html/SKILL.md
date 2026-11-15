@@ -27,6 +27,9 @@ PDF から、アドオン Paragraph-Based Incremental Reading が取り込める
   書体、色、表の罫線、小型大文字、数式の枠のような見た目は出力に無い。class を書くのは aside.pdf-footnote（assemble.py が外す）だけ。
   印刷どおりに番号を書いたリストは `type="none"` でブラウザの番号を消す（type は取り込みで残る。markup.md の 5）。
 - 画像は data URI で HTML の中に入れる。数式は TeX で書き、assemble.py が MathML にする。
+- 段落が離れた所の図、表、式、節、脚注を名前で指していれば（"Figure 3" など）、その語句を行き先へのリンク
+  （`<a href="#fig3">` と、行き先の `id="fig3"`）にする。学習画面でリンクを押すと行き先まで動く。行き先から戻るリンクは書かない
+  （markup.md の 13）。
 - 出力は `<article lang="…">` 1 個だけ（`<html>`, `<head>`, `<title>` は取り込みで使われないので書かない）。各ページの最初の要素の中に、そのページの番号を持つ空の
   `<span data-pdf-page="N" data-page-label="印刷されたページ番号">` を入れる（assemble.py がする）。
   この span は表示に出ず、どの文がどのページから来たかを残す。段落の間には入れない
@@ -78,6 +81,8 @@ $PY $S/draft.py WORK --pages 1-6 --frag
 - 印を見て直す: `<!--cont?-->`（前の段落の続き。前の段落とつなぐ）、`<!--hy?-->`（行末のハイフン。残すか取るか）、
   `<!--lang? …-->`（`lang` を付ける）、`dir="rtl"`。`<!-- furniture: … -->`（柱とページ番号）は何もしなくてよい。
 - 前のページから続く段落の先頭に `data-pdf-cont`、脚注は aside（ページの下に書いたままでよい。markup.md の 9）、箇条書きは ol/ul の li にする。
+- 離れた所の図、表、式、節、脚注を指す語句をリンクにし、行き先に `id` を付ける（markup.md の 13）。行き先がまだ書いていないページに
+  あるときは、`id` を先に決めて（`fig3` など）、そのページを書くときに付ける。
 - 下書きだけで構造が分からないときに限り、そのページの画像 `pages/pNNNN.png` を見る。
 - 照合（compare.py）は要らない（文字を写しただけなので）。
 
@@ -91,7 +96,7 @@ $PY $S/draft.py WORK --pages 1-6 --frag
 $PY $S/assemble.py WORK OUT.html --lang en
 ```
 
-誤り（TeX の誤り、段落の中のブロック、figure の外の img など）があれば一覧を出して止まる。`frag/` を直して組み立て直す。
+誤り（TeX の誤り、段落の中のブロック、figure の外の img、行き先の無いリンクなど）があれば一覧を出して止まる。`frag/` を直して組み立て直す。
 
 ### 5 点検
 
