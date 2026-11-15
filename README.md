@@ -24,6 +24,7 @@ The add-on is developed with Anki 26.09.2 on macOS. It is made for the desktop v
 1. **PBIR → New Deck** creates a deck PBIR with subdecks Tier 1 to Tier 8 and Trash, and a deck options preset PBIR.
 2. **PBIR → Import ...** imports a web page (URL), an HTML, plain-text or Markdown file (Markdown is read as plain text, its marks as written). Choose a Tier as the deck. The article's images are downloaded and stored in Anki's media folder with the document, so it reads offline; an image that can't be downloaded keeps its web address.
 3. Study the deck. On the front of a paragraph card you can edit the paragraph; on the back you can make cards from it (PBIR → Create).
+4. Click a link to another part of the article, such as a footnote or a figure, to go there. **PBIR → Back** (Command-[ on macOS, Alt-Left Arrow on Windows and Linux) returns to where you were, and **PBIR → Forward** goes there again.
 
 ## License
 

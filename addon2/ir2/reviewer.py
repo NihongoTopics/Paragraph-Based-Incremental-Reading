@@ -7,7 +7,7 @@ from urllib.parse import unquote
 
 from anki.errors import NotFoundError
 from aqt import gui_hooks, mw
-from aqt.qt import QAction, QMenu
+from aqt.qt import QAction, QKeySequence, QMenu
 from aqt.utils import showWarning, tooltip
 
 from . import core, documents, importer
@@ -23,6 +23,9 @@ _state = dict(_STATE_DEFAULT)
 # Create → Basic などで書いている問いと答えの下書き（ir2:draft の {kind, fields} と、docid, anchor, 書いた段落のカードの nid と did）。
 # カードを離れるときに quiz のノートにする（_commit_draft）
 _draft: dict = {}
+# PBIR → Back と Forward が使えるか。カードの JS が ir2:nav で知らせる（card.js の setupLinks）。どのカードでも知らせる
+_NAV_DEFAULT = {"back": False, "forward": False}
+_nav = dict(_NAV_DEFAULT)
 # PBIR → Source Text のチェック。カードが替わっても続く（Anki を閉じるまで）
 _source_text = False
 # PBIR → Font の項目
@@ -41,6 +44,7 @@ def _reset_state(*_args) -> None:
     （_commit_draft）。"""
     _commit_draft()
     _state.update(_STATE_DEFAULT)
+    _nav.update(_NAV_DEFAULT)
     _font.update(dict.fromkeys(_CHECK_KEYS, False))
     _sync_menu()
 
@@ -121,6 +125,11 @@ def _on_state(_docid: str, _anchor: str, payload: str):
     return {"source": _source_text}
 
 
+def _on_nav(_docid: str, _anchor: str, payload: str):
+    _nav.update(json.loads(payload))
+    _sync_menu()
+
+
 def _on_cloze(docid: str, anchor: str, inner_html: str):
     """PBIR → Create → Cloze。選択範囲の data-cloze マーク 1 個とノート 1 件。ノートの Text は段落の中のその語の出現を
     すべて隠す。JS は受け取った id で DOM の PENDING を置き換える。"""
@@ -160,6 +169,7 @@ def _on_merge(docid: str, anchor: str, payload: str):
 
 
 _HANDLERS = {"save": _on_save, "source": _on_source, "font": _on_font, "note": _on_note, "state": _on_state,
+             "nav": _on_nav,
              "cloze": _on_cloze, "draft": _on_draft, "extract": _on_extract, "merge": _on_merge}
 
 
@@ -254,6 +264,8 @@ def on_answer_buttons(buttons, _reviewer, card):
 #
 # メニューバーの PBIR メニュー。項目にキーショートカットは付けない。
 # 付けると Qt が webview より先にキーを取り、編集中の文字入力を奪うため。
+# Back と Forward だけは、ブラウザと同じキーを付ける（macOS は ⌘[ と ⌘]、ほかは Alt+← と Alt+→。Qt の QKeySequence の
+# StandardKey の最初の割り当て）。文字の入力に使うキーではない。
 
 def _sync_menu() -> None:
     """項目の灰色表示とチェックを、表示中のカードの状態（_state、_font）に合わせる。"""
@@ -276,6 +288,9 @@ def _sync_menu() -> None:
         _actions[key].setEnabled(front)
     _actions["merge_prev"].setEnabled(front and _state["prev"])
     _actions["merge_next"].setEnabled(front and _state["next"])
+    # 文書の中のリンクで動いたあと。段落のカードに限らない
+    for key in _NAV_DEFAULT:
+        _actions[key].setEnabled(mw.state == "review" and _nav[key])
     # Open Document などの項目はノートと文書のファイルから決めるので、JS の準備を待たない（cloze と quiz のカードでも使える）
     note = documents.current_ir_note()
     _actions["open_source"].setEnabled(bool(documents.source_url(note)))
@@ -291,6 +306,15 @@ def _run(cmd: str, arg=None) -> None:
     web = mw.reviewer.web
     web.setFocus()  # メニューを閉じたあとキー入力が webview に戻るように
     web.eval(f"window._ir2Cmd && window._ir2Cmd({json.dumps(cmd)}, {json.dumps(arg)});")
+
+
+def _go(to: str) -> None:
+    """PBIR → Back と Forward。カードの JS の window._ir2Go を呼ぶ（card.js の setupLinks）。"""
+    if mw.state != "review":
+        return
+    web = mw.reviewer.web
+    web.setFocus()
+    web.eval(f"window._ir2Go && window._ir2Go({json.dumps(to)});")
 
 
 def _toggle_source_text(checked: bool) -> None:
@@ -338,6 +362,8 @@ def setup_menu() -> None:
     _add(menu, "extract", "Extract", lambda: _run("extract"))
     _add(menu, "merge_prev", "Merge Previous", lambda: _run("merge", "prev"))
     _add(menu, "merge_next", "Merge Next", lambda: _run("merge", "next"))
+    _add(menu, "back", "Back", lambda: _go("back")).setShortcut(QKeySequence(QKeySequence.StandardKey.Back))
+    _add(menu, "forward", "Forward", lambda: _go("forward")).setShortcut(QKeySequence(QKeySequence.StandardKey.Forward))
     opendoc = menu.addMenu("Open Document")
     _add(opendoc, "open_source", "Source", documents.open_source)
     _add(opendoc, "open_original", "Original", lambda: documents.open_document(orig=True))

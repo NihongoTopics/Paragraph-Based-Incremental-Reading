@@ -89,6 +89,7 @@
       root.innerHTML = '';
       if (warn) root.appendChild(warn);
       root.appendChild(doc);
+      setupLinks(doc, target);
       placeTarget(doc, target, keep);
       setupEdit(target);
     }).catch(function (err) {
@@ -129,6 +130,51 @@
     USER_EVENTS.forEach(function (t) { window.addEventListener(t, stop, true); });
     window._ir2StopPlacing = stop;
     ro.observe(doc);
+  }
+
+  // 文書の中のリンク（href="#…"。行き先は要素の id か a の name）を押すと、行き先まで動く。編集中の段落の中のリンクでも動く。
+  // ブラウザに任せない。Anki のページは <base> を持つので "#…" は別のページへのリンクになり、Anki はそれを開かない
+  // （aqt/webview.py の AnkiWebPage.acceptNavigationRequest。26.09.2）。履歴も残らない。
+  // 動く前の位置を覚えておき、PBIR → Back で戻り、Forward で Back を選んだ位置へ進む（Python が window._ir2Go を呼ぶ）。
+  // 描画し直すと（次のカード、面の切り替え、Extract と Merge のあと）、覚えた位置は捨てる。
+  // 行き先のブロックは、対象の段落と同じく薄くしない（.ir-near）。読むために動いた先なので。
+  // どのカード（段落、cloze、quiz）でも使える。Back と Forward が使えるかを ir2:nav で Python に知らせる。
+  function setupLinks(doc, target) {
+    var trail = {back: [], forward: []};
+    function push() {
+      pycmd('ir2:nav:' + docid + ':' + para + ':' +
+            JSON.stringify({back: trail.back.length > 0, forward: trail.forward.length > 0}));
+    }
+    function linkPlace(link) {
+      var href = link.getAttribute('href');
+      if (href.charAt(0) !== '#' || href.length < 2) return null;
+      var id = href.slice(1);
+      try { id = decodeURIComponent(id); } catch (e) { /* 書かれたまま */ }
+      return doc.querySelector('[id="' + CSS.escape(id) + '"], a[name="' + CSS.escape(id) + '"]');
+    }
+    doc.addEventListener('click', function (ev) {
+      if (ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      var link = ev.target.closest('a[href]');
+      var place = link ? linkPlace(link) : null;
+      if (!place) return;
+      ev.preventDefault();
+      trail.back.push(window.scrollY);
+      trail.forward = [];
+      var block = place;
+      while (block.parentElement !== doc && !block.hasAttribute('data-ir')) block = block.parentElement;
+      if (!block.contains(target)) block.classList.add('ir-near');
+      place.scrollIntoView();
+      push();
+    });
+    // to は back か forward
+    window._ir2Go = function (to) {
+      if (!document.body.contains(doc) || !trail[to].length) return;
+      if (window._ir2StopPlacing) window._ir2StopPlacing();   // 中央に出し直さない（placeTarget）
+      trail[to === 'back' ? 'forward' : 'back'].push(window.scrollY);
+      window.scrollTo(window.scrollX, trail[to].pop());
+      push();
+    };
+    push();
   }
 
   // 文書を出せずにフィールドだけの表示（フォールバック）になったとき、その理由を上に出す

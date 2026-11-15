@@ -73,6 +73,23 @@ function irReadArticle(html, url) {
         // Built in a document of its own, where images don't load and attributes don't run.
         const out = document.implementation.createHTMLDocument("");
         out.body.innerHTML = article.content;
+        // Readability makes every link absolute, also a link to a place in the page itself, since the page's
+        // base isn't its own address here. Such a link, if its place is in the article, is written as the page
+        // had it ("#…"), so it stays a link within the document (the card's script follows it there).
+        if (url) {
+            const page = new URL(url);
+            page.hash = "";
+            for (const link of out.body.querySelectorAll("a[href]")) {
+                let to;
+                try { to = new URL(link.getAttribute("href")); } catch { continue; }
+                if (to.hash.length < 2 || to.href.slice(0, -to.hash.length) !== page.href) { continue; }
+                let id = to.hash.slice(1);
+                try { id = decodeURIComponent(id); } catch { /* as written */ }
+                if (out.body.querySelector(`[id="${CSS.escape(id)}"], a[name="${CSS.escape(id)}"]`)) {
+                    link.setAttribute("href", to.hash);
+                }
+            }
+        }
         const date = /^\d{4}-\d{2}-\d{2}/.exec(article.publishedTime || "");
         const line = [article.byline, date && date[0]].filter((s) => s && s.trim()).join(", ");
         if (line) {
