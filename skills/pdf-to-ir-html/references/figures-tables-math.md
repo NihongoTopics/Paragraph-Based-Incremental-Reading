@@ -9,7 +9,7 @@
   ```
   <figure><img src="figs/p0003-1.png" alt="…"><figcaption>Figure 2. …</figcaption></figure>
   ```
-- 画像は crop.py で PDF から切り出す（SKILL.md 手順 4）。範囲は図の中の文字（軸の目盛り、節点のラベル）を含め、
+- 画像は crop.py で PDF から切り出す（SKILL.md 手順 3）。範囲は図の中の文字（軸の目盛り、節点のラベル）を含め、
   図の番号と説明（キャプション）は含めない。キャプションは `<figcaption>` に文字で書く。
 - `<img>` を `<p>` の中に入れず、`<figure>` の外にも書かない。
   理由: カードになる（取り込みの irPrepare は p を、中身が画像だけでもカードにする。文書の直下の裸の img は p に入れられる）。

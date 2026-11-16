@@ -12,7 +12,7 @@
   スキルは取り込みで残らないものを出力に書かない。
 - カードの一覧を WORK/check/cards.txt（--work が無ければ OUT の隣の OUT.cards.txt）に書く。
   各行: 段落の ID、ページ、文字数、先頭の文字。
-- 警告: 見出しなのにカードになったもの（draft.py が見出しと見なした文か、番号などで始まる短い文）、短すぎるカード、数字だけのカード、同じ文のカード、前の段落の続きらしいカード（前が文の途中で終わり、
+- 警告: 見出しなのにカードになったもの（draft.py が見出しと見なした文か、番号などで始まる短い文）、カードになった文献の一覧、短すぎるカード、数字だけのカード、同じ文のカード、前の段落の続きらしいカード（前が文の途中で終わり、
   小文字で始まる）、ハイフンで終わるカード、残った印（<tex>, merror, ソフトハイフン, data-pdf-cont）、
   言語と向きの属性の不足（右から左の文字に dir="rtl" が無い、かなに lang="ja" が無い、など）、
   どのカードにも入らない文字（見出し、キャプション、表、pre、blockquote、数式の外）。
@@ -47,6 +47,10 @@ _LATINISH = re.compile("[A-Za-zÀ-ɏͰ-ϿЀ-ӿ]")
 SENTENCE_END = re.compile(r"[.!?:;…。！？」』)\]\"'”’]\s*$")
 # 見出しの書き出しらしい形（番号、章、節など）。カードになった見出しを探すのに使う
 HEADING_START = re.compile(r"^(\d+(\.\d+)*\.?\s|[IVXLC]+\.\s|(Chapter|Section|Part|Appendix)\b|第.{1,4}[章節部編]|§)")
+# 文献の一覧の見出し。その次のブロックがカードなら、一覧のリストを blockquote で囲み忘れている（markup.md の 5）
+REFERENCES_HEADING = re.compile(r"^[\dIVXLC.\s]*(references?( cited)?|bibliography|works cited|literature cited|"
+                                r"literatur(verzeichnis)?|bibliographie|références|参考文献|引用文献|参照文献|文献|"
+                                r"参考文献一覧|文献一覧|参考书目|參考文獻|参考文献表|참고문헌)\s*$", re.I)
 # カードにならなくてよい要素（アドオンの取り込みでカードにならない、と markup.md が書いているもの）
 NON_CARD_OK = ("h1", "h2", "h3", "h4", "h5", "h6", "figcaption", "caption", "td", "th", "math", "pre", "blockquote")
 
@@ -206,6 +210,18 @@ def main() -> None:
         if (len(_HAN.findall(t)) > len(letters) / 3 and not _KANA.search(t)
                 and not lang.startswith(("ja", "zh"))):
             warnings.append(f"{where}: Han text whose lang is {lang or 'unset'} (ja or zh-Hans/zh-Hant?): {t[:30]!r}")
+
+    # カードになった文献の一覧、blockquote の中の p で書いた文献の一覧（Readability を通るとカードになる。markup.md の 5）
+    for h in soup.find_all(rules._HEADINGS):
+        nxt = h.find_next_sibling(True)
+        if not REFERENCES_HEADING.match(text_of(h)) or nxt is None:
+            continue
+        if nxt.has_attr("data-ir"):
+            warnings.append(f"{nxt['data-ir']} (p.{pages.get(id(nxt), (None,))[0]}): the list of references is cards "
+                            f"(write it as a list inside a <blockquote>): {text_of(h)[:40]!r}")
+        elif nxt.name == "blockquote" and nxt.find("p"):
+            warnings.append(f"the list of references is <p> inside <blockquote>, which become cards on import "
+                            f"(write each reference as an <li> of a list inside the <blockquote>): {text_of(h)[:40]!r}")
 
     # 残った印と画像
     if soup.find("tex"):

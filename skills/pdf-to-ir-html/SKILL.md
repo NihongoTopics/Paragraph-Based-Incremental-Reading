@@ -23,6 +23,8 @@ PDF から、アドオン Paragraph-Based Incremental Reading が取り込める
   本文の段落は p。脚注は aside.pdf-footnote の中の p で書く。assemble.py が脚注を、合印（本文の `<sup>`）のある段落のすぐ後へ移し、
   aside を外して本文の段落と並べる（カードになる）。
   題の周りの著者や日付は `<p>` で 1 行ずつ書く（カードになる）。
+  文献の一覧（References、Bibliography、参考文献など）は、見出しを h2〜h6、文献を 1 件ずつリストの `<li>` で書き、そのリストを
+  `<blockquote>` で囲む。文書に残って表示されるが、カードにならない（markup.md の 5）。
 - 取り込みは style と class の属性と、Readability が表示用とする属性（table の border など）を外す。だから書かない。
   書体、色、表の罫線、小型大文字、数式の枠のような見た目は出力に無い。class を書くのは aside.pdf-footnote（assemble.py が外す）だけ。
   印刷どおりに番号を書いたリストは `type="none"` でブラウザの番号を消す（type は取り込みで残る。markup.md の 5）。
@@ -81,6 +83,8 @@ $PY $S/draft.py WORK --pages 1-6 --frag
 - 印を見て直す: `<!--cont?-->`（前の段落の続き。前の段落とつなぐ）、`<!--hy?-->`（行末のハイフン。残すか取るか）、
   `<!--lang? …-->`（`lang` を付ける）、`dir="rtl"`。`<!-- furniture: … -->`（柱とページ番号）は何もしなくてよい。
 - 前のページから続く段落の先頭に `data-pdf-cont`、脚注は aside（ページの下に書いたままでよい。markup.md の 9）、箇条書きは ol/ul の li にする。
+- 文献の一覧は、下書きでは 1 件ずつ `<p>` になっている。1 件ずつ `<li>` に直し、リストを `<blockquote>` で囲む
+  （次のページへ続くときの書き方も markup.md の 5）。
 - 離れた所の図、表、式、節、脚注を指す語句をリンクにし、行き先に `id` を付ける（markup.md の 13）。行き先がまだ書いていないページに
   あるときは、`id` を先に決めて（`fig3` など）、そのページを書くときに付ける。
 - 下書きだけで構造が分からないときに限り、そのページの画像 `pages/pNNNN.png` を見る。
@@ -107,7 +111,8 @@ $PY $S/check.py OUT.html --work WORK
 アドオンの取り込みの規則の写し（`scripts/ir_rules.py`）に通してカードを数え、警告を出す。
 
 - 警告を一つずつ確かめる。「a heading became a card」と「looks like a heading」は、見出しがカードになっている警告なので、
-  見出しなら必ず `<h1>`〜`<h6>` に直す。「removed on import」と「removed or changed on import」の誤りは、取り込みで外れるか形が変わるものを書いたという意味なので、
+  見出しなら必ず `<h1>`〜`<h6>` に直す。「the list of references is cards」は、文献の一覧がカードになっている警告なので、
+  markup.md の 5 の形に直す。「removed on import」と「removed or changed on import」の誤りは、取り込みで外れるか形が変わるものを書いたという意味なので、
   `frag/` から消すか書き方を替える。ほかに、短すぎるカード、同じ文のカード、続きらしいカード、どのカードにも入らない文字、
   言語と向きの属性の不足など。
   カードの一覧 `WORK/check/cards.txt` は、警告のあるページのところだけ見ればよい。
