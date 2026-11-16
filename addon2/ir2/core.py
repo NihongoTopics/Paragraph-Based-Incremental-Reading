@@ -1561,7 +1561,7 @@ PBIR_PRESET_VALUES = {
     "new": {"bury": True, "delays": [10080.0], "initialFactor": 1500, "ints": [47, 337, 0], "perDay": 256},
     "rev": {"bury": True, "ease4": 2.0, "hardFactor": 0.99, "ivlFct": 0.8, "perDay": 512},
     "lapse": {"delays": [10080.0, 15840.0, 18720.0], "leechAction": 0, "leechFails": 3, "minInt": 17},
-    "newSortOrder": 1, "buryInterdayLearning": True,
+    "newSortOrder": 1, "reviewOrder": 9, "buryInterdayLearning": True,
 }
 
 
