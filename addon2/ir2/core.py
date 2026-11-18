@@ -149,7 +149,7 @@ def doc_path(col: Collection, docid: str, orig: bool = False) -> str:
     """文書のファイル。orig なら原本。
 
     文書のファイルはほかに、取り込みが書き出した画像（_ir2_<docid>_0001.png など。store_images）と、Pilcrow が文書に
-    付ける PDF（_ir2_<docid>.pdf）がある。アドオンは PDF を作らず、変えず、消さない（アンダースコア始まりなので Anki の
+    付ける PDF（_ir2_<docid>.pdf）と引用（BibTeX のファイル、_ir2_<docid>.bib）がある。アドオンはこれらを作らず、変えず、消さない（アンダースコア始まりなので Anki の
     Check Media も触らない）。
     """
     suffix = ".orig.html" if orig else ".html"
