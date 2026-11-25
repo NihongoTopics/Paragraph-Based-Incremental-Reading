@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """取り込みダイアログ（PBIR → Import ...）と PBIR → Check Duplicates。"""
 
+import functools
 import json
 import os
 import re
@@ -14,7 +15,7 @@ from aqt.operations import QueryOp
 from aqt.qt import (
     QBuffer, QByteArray, QDialog, QDialogButtonBox, QEvent, QFileDialog, QFormLayout, QHBoxLayout, QImageIOHandler,
     QImageReader, QIODevice, QLabel, QLineEdit, QMenu, QObject, QPushButton, QSizePolicy, QTimer, QUrl, QWebEnginePage,
-    QWebEngineSettings, QWebEngineView, QWidget, Qt,
+    QWebEngineScript, QWebEngineSettings, QWebEngineView, QWidget, Qt,
 )
 from aqt.theme import theme_manager
 from aqt.utils import showText, showWarning, tooltip
@@ -90,50 +91,129 @@ _BLANK = "<!doctype html><html><body></body></html>"
 
 
 _HERE = os.path.dirname(__file__)
+# 取り込みの JS を動かす世界。ページのスクリプトとは別の世界なので、ページから見えず、ページが同じ名前のものを作っても混ざらない
+_WORLD = QWebEngineScript.ScriptWorldId.ApplicationWorld
+
+
+@functools.cache
+def _import_script() -> QWebEngineScript:
+    """取り込みの JS。Mozilla Readability 0.6.0（vendor/Readability.js、Apache-2.0。Firefox のリーダービューの処理）と、
+    記事を文書の形にする import.js（Pilcrow と同じファイル）。ページに入れておくと、文書を読み込むたびに _WORLD で動く。"""
+    src = ""
+    for name in ("vendor/Readability.js", "import.js"):
+        with open(os.path.join(_HERE, name), encoding="utf-8") as f:
+            src += f.read() + "\n"
+    script = QWebEngineScript()
+    script.setSourceCode(src)
+    script.setWorldId(_WORLD)
+    script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+    return script
+
+
+def _run(page: QWebEnginePage, call: str, callback) -> None:
+    """import.js の関数の呼び出し call を page の _WORLD で動かし、戻り値（JSON で受け取ったもの）を callback に渡す。
+    動かなかったときは None を渡す。"""
+    def done(result) -> None:
+        try:
+            callback(json.loads(result))
+        except (TypeError, ValueError):
+            callback(None)
+
+    page.runJavaScript(f"JSON.stringify({call})", _WORLD, done)
 
 
 class _ImportPage:
-    """取り込みの JS を動かす、見えない QWebEnginePage。Mozilla Readability 0.6.0（vendor/Readability.js、Apache-2.0。
-    Firefox のリーダービューの処理）と、記事を文書の形にする import.js（Pilcrow と同じファイル）を読み込んでおく。
+    """取り込みの JS（_import_script）を動かす、見えない空の QWebEnginePage。
 
-    call(name, args, callback) は import.js の関数 name を args で呼び、戻り値（JSON で受け取ったもの）を callback に渡す。
-    動かなかったときは None を渡す。
+    call(name, args, callback) は import.js の関数 name を args で呼び、戻り値を callback に渡す（_run）。
     """
 
     def __init__(self, parent):
         self.page = QWebEnginePage(parent)
+        self.page.scripts().insert(_import_script())
         self._ready = False
         self._queue = []
-        self.page.loadFinished.connect(self._loaded)
+        self.page.loadFinished.connect(self._set_ready)
         self.page.setHtml(_BLANK)
 
-    def _loaded(self, _ok: bool) -> None:
-        src = ""
-        for name in ("vendor/Readability.js", "import.js"):
-            with open(os.path.join(_HERE, name), encoding="utf-8") as f:
-                src += f.read() + "\n"
-        self.page.runJavaScript(src, lambda _r: self._set_ready())
-
-    def _set_ready(self) -> None:
+    def _set_ready(self, _ok: bool) -> None:
         self._ready = True
         queue, self._queue = self._queue, []
         for args in queue:
-            self._run(*args)
+            self.call(*args)
 
     def call(self, name: str, args: list, callback) -> None:
         if self._ready:
-            self._run(name, args, callback)
+            _run(self.page, f"{name}(...{json.dumps(args)})", callback)
         else:
             self._queue.append((name, args, callback))
 
-    def _run(self, name: str, args: list, callback) -> None:
-        def done(result) -> None:
-            try:
-                callback(json.loads(result))
-            except (TypeError, ValueError):
-                callback(None)
 
-        self.page.runJavaScript(f"JSON.stringify({name}(...{json.dumps(args)}))", done)
+class _WebArticle(QWebEnginePage):
+    """URL の HTML のページを、ブラウザが出すとおりに（ページのスクリプトを動かして）読み込み、その記事を import.js の
+    irImport で取り出して callback に渡す、見えないページ。
+
+    スクリプトが記事を描くページ（Scrapbox など）では、サーバーが送る HTML に記事が無い（Scrapbox の本文は検索エンジン
+    向けの隠れた要約にしか無く、Readability はそれを飛ばす）。そこで読み込みが済んだらすぐと、そのあと 0.5 秒ごとに
+    10 秒まで、Readability が記事を見つけるまで試す（Safari のリーダーが、ページが記事を描いてから出るのと同じ。
+    Pilcrow も同じ: DocumentImport.swift の prepare）。
+
+    ページは setHtml でなく、エンジン自身に URL から読み込ませる（ImportDialog は fetch_url で読んだものから、HTML か平文かと、
+    読めないときの理由を知る）。setHtml は内容を % 表記の data: URL にして読み込むので、それが 2 MB を超えると読み込まない。
+    日本語は 1 文字が 9 バイトになり、ja.wikipedia.org/wiki/日本 の 2.2 MB の HTML は 3.9 MB になる（Anki 26.09.2 の
+    Qt WebEngine で確かめた）。画像は読み込まない。Readability は img の属性を読むだけで、取り込む画像は accept が
+    ダウンロードする。画像を待たないので、ja.wikipedia.org/wiki/猫 の読み込みは 10 秒から 2 秒になる。
+
+    stop() で止める（callback はもう呼ばない）。記事を渡したときも止まる。
+    """
+
+    INTERVAL_MS = 500
+    TIMEOUT_MS = 10000
+
+    def __init__(self, parent, url: str, callback):
+        super().__init__(parent)
+        self.scripts().insert(_import_script())
+        self.settings().setAttribute(QWebEngineSettings.WebAttribute.AutoLoadImages, False)
+        self.setAudioMuted(True)
+        self._callback = callback
+        self._stopped = False
+        self._left = self.TIMEOUT_MS // self.INTERVAL_MS
+        self._retry = QTimer(self)
+        self._retry.setSingleShot(True)
+        self._retry.setInterval(self.INTERVAL_MS)
+        self._retry.timeout.connect(self._try)
+        self.loadFinished.connect(self._loaded)
+        self.load(QUrl(ascii_url(url)))
+
+    def _loaded(self, ok: bool) -> None:
+        self.loadFinished.disconnect(self._loaded)
+        if ok:
+            self._try()
+        else:
+            self._finish({"error": "the page did not load"})
+
+    def _try(self) -> None:
+        # 相対のリンクは、ページが今いるアドレス（転送やスクリプトが替えたあと）から読む
+        _run(self, "irImport(document.documentElement.outerHTML, 'html', location.href)", self._tried)
+
+    def _tried(self, result) -> None:
+        if self._stopped:
+            return
+        if result and result.get("error") and self._left:
+            self._left -= 1
+            self._retry.start()
+        else:
+            self._finish(result)
+
+    def _finish(self, result) -> None:
+        callback = self._callback
+        self.stop()
+        callback(result)
+
+    def stop(self) -> None:
+        if not self._stopped:
+            self._stopped = True
+            self.deleteLater()
 
 
 class _FileDrop(QObject):
@@ -172,11 +252,16 @@ class _Article:
 
     def __init__(self):
         self.seq = 0
+        self.page = None
         self.reset(None)
 
     def reset(self, origin) -> None:
-        """元を替える（None なら元が無い）。seq を増やして、前の元の取り出しの結果を捨てる（ImportDialog._prepare）。"""
+        """元を替える（None なら元が無い）。seq を増やして、前の元の取り出しの結果を捨て（ImportDialog._prepare）、
+        読み込み中のページを止める。"""
         self.seq += 1
+        if self.page is not None:
+            self.page.stop()
+        self.page = None       # 記事を読むために読み込んでいる web のページ（_WebArticle）
         self.origin = origin   # 説明に出す名前（読み込みが済んだ URL かファイル名）
         self.prepared = None   # 取り込む文書（import.js の irImport の結果: html, paragraphs, images）
         self.error = None      # 文書を作れなかった理由
@@ -188,8 +273,9 @@ class ImportDialog(QDialog):
     貼り付けの欄があったころと同じ規則で、貼り付けの代わりにファイルを使う。
       - URL 欄は常に文書の Source になる。
       - URL を入れる（貼り付ける）と、すぐに裏で読み込む。読み込めたらプレビューに出す。
-      - URL のページも HTML のファイルも、Readability で記事の本文を取り出して出す。平文（Markdown も）はそのまま。どちらも
-        import.js が文書の形にする（_ImportPage、_prepare）。
+      - URL のページも HTML のファイルも、Readability で記事の本文を取り出して出す。URL のページは、ブラウザが出すとおりに
+        スクリプトを動かしてから読む（_WebArticle）。平文（Markdown も）はそのまま。どちらも import.js が文書の形にする
+        （_ImportPage、_prepare）。
       - ファイルを選ぶと、プレビューはファイルに替わる。取り込むのはファイルで、URL から
         読み込んだ文書は使わない（URL は Source としてだけ使う）。
       - ファイルを外すと（Remove）、URL から読み込んだ文書がプレビューに戻る。
@@ -343,8 +429,9 @@ class ImportDialog(QDialog):
 
     def _prepare(self, src: _Article, text: str, kind: str, url: str) -> None:
         """src（URL かファイル）の取り込む文書を import.js の irImport で作り、src.prepared か src.error に入れる。
-        kind は core.article_html の種類で、html なら Readability で本文を取り出す。作り終わる前に src の元が替わって
-        いたら（seq が違う）、結果を捨てる。ファイルなら重複の警告も出す。"""
+        kind は core.article_html の種類で、html なら Readability で本文を取り出す。URL の HTML は、ページのスクリプトを
+        動かしてから読む（_WebArticle）。作り終わる前に src の元が替わっていたら（seq が違う）、結果を捨てる。
+        ファイルなら重複の警告も出す。"""
         seq = src.seq
 
         def done(result) -> None:
@@ -358,7 +445,10 @@ class ImportDialog(QDialog):
                     self._check_file_dupes(result)
             self._refresh()
 
-        self._page.call("irImport", [text, kind, url], done)
+        if kind == "html" and url:
+            src.page = _WebArticle(self, url, done)
+        else:
+            self._page.call("irImport", [text, kind, url], done)
 
     # ------------------------------------------------ file
 
@@ -493,6 +583,7 @@ class ImportDialog(QDialog):
     def done(self, r: int) -> None:
         self._closed = True
         self._fetch_timer.stop()
+        self._from_url.reset(None)
         self._remove_preview_file()
         super().done(r)
 
