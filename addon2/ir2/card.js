@@ -36,6 +36,12 @@
     while (n.firstChild) n.parentNode.insertBefore(n.firstChild, n);
     n.parentNode.removeChild(n);
   }
+  // Python への知らせ（reviewer.py の on_js_message）。形は ir2:<操作>:<DocId>:<段落の ID>:<中身>。after は Python の戻り値を受け取る
+  function send(cmd, payload, after) {
+    pycmd('ir2:' + cmd + ':' + docid + ':' + para + ':' + encodeURIComponent(payload), after || null);
+  }
+  // 対象の段落を中央に出し直すのをやめる（placeTarget）
+  function stopPlacing() { if (window._ir2StopPlacing) window._ir2StopPlacing(); }
 
   // 文書を読み、記事を描画して編集の準備をする。カードを出したときと、Extract と Merge のあと
   // （sendStructural）に呼ぶ。Extract と Merge のあとに Anki の描画し直し（reviewer の
@@ -110,7 +116,7 @@
   // 描画し直した直後は上の画像がまだ高さを持たず、文書が短い。画像が読み込まれ終わると、操作した所より上は前と同じ
   // 高さになるので、同じスクロール位置が同じ場所を指す。
   function placeTarget(doc, target, keep) {
-    if (window._ir2StopPlacing) window._ir2StopPlacing();
+    stopPlacing();
     function place() {
       if (keep === undefined) target.scrollIntoView({block: 'center'});
       else window.scrollTo(window.scrollX, keep);
@@ -142,8 +148,7 @@
   function setupLinks(doc, target) {
     var trail = {back: [], forward: []};
     function push() {
-      pycmd('ir2:nav:' + docid + ':' + para + ':' +
-            JSON.stringify({back: trail.back.length > 0, forward: trail.forward.length > 0}));
+      send('nav', JSON.stringify({back: trail.back.length > 0, forward: trail.forward.length > 0}));
     }
     function linkPlace(link) {
       var href = link.getAttribute('href');
@@ -169,7 +174,7 @@
     // to は back か forward
     window._ir2Go = function (to) {
       if (!document.body.contains(doc) || !trail[to].length) return;
-      if (window._ir2StopPlacing) window._ir2StopPlacing();   // 中央に出し直さない（placeTarget）
+      stopPlacing();
       trail[to === 'back' ? 'forward' : 'back'].push(window.scrollY);
       window.scrollTo(window.scrollX, trail[to].pop());
       push();
@@ -209,8 +214,7 @@
   // Python は保存したあとの段落の HTML を返す（after に渡す）
   function save(target, after) {
     if (!sourceMode) marksFromStyles(target);
-    pycmd('ir2:save:' + docid + ':' + para + ':' +
-          encodeURIComponent(sourceMode ? target.textContent : target.innerHTML), after || null);
+    send('save', sourceMode ? target.textContent : target.innerHTML, after);
   }
 
   function setupEdit(target) {
@@ -229,8 +233,8 @@
     };
     document.addEventListener('selectionchange', window._ir2SelHandler);
     window._ir2Cmd = function (cmd, arg) {
-      // メニューの操作（Create で問いの欄を出すなど）で段落の高さが変わっても、中央に出し直さない（placeTarget）
-      if (window._ir2StopPlacing) window._ir2StopPlacing();
+      // メニューの操作（Create で問いの欄を出すなど）で段落の高さが変わっても、中央に出し直さない
+      stopPlacing();
       if (quiz) return;   // Create → Basic などを開いている間。段落の操作はしない（quiz を作るのはカードを離れるとき）
       if (cmd === 'source') { setSource(target, !!arg); return; }
       // 以下は描画された段落に対する操作。PBIR → Create は回答面だけ、ほかは問題面だけ
@@ -319,13 +323,13 @@
   // Python 側のメニュー（チェックと灰色表示）のための状態通知。段落のカードだけが送る。
   // creating は、Create → Basic などで問いと答えを書いている間
   function pushState(target, after) {
-    pycmd('ir2:state:' + docid + ':' + para + ':' + JSON.stringify({
+    send('state', JSON.stringify({
       side: side,
       creating: !!quiz,
       source: sourceMode,
       prev: !!adjacentPara(target, 'prev'),
       next: !!adjacentPara(target, 'next')
-    }), after || null);
+    }), after);
     pushFont(target);
   }
 
@@ -353,7 +357,7 @@
     var s = JSON.stringify(st);
     if (s === lastFont) return;
     lastFont = s;
-    pycmd('ir2:font:' + docid + ':' + para + ':' + s);
+    send('font', s);
   }
 
   // PBIR → Source Text。段落の HTML のソースを文字として表示する（文書に書かれているとおりの HTML を
@@ -378,7 +382,7 @@
     };
     sourceBusy = true;
     if (editable && !saved) save(target, done);
-    else pycmd('ir2:source:' + docid + ':' + para + ':', done);
+    else send('source', '', done);
   }
 
   // 直前か直後の兄弟がカードの div ならそれ。結合できなければ null（core._adjacent_para と同じ。間は空白とコメントだけ。
@@ -427,8 +431,7 @@
   function sendStructural(target, cmd, arg, html) {
     structBusy = true;
     target.removeAttribute('contenteditable');
-    pycmd('ir2:' + cmd + ':' + docid + ':' + para + ':' + (arg ? arg + ':' : '') +
-          encodeURIComponent(html), function (res) {
+    send(cmd, (arg ? arg + ':' : '') + html, function (res) {
       structBusy = false;
       if (res === 'ok') { render(window.scrollY); return; }
       if (editable) { target.setAttribute('contenteditable', 'true'); target.focus(); }
@@ -572,18 +575,25 @@
     return false;
   }
 
-  // 選択範囲の中の文字（空白だけの部分は除く）がすべて <mark> の中にあるか
-  function fullyMarked(range, target) {
+  // 選択範囲の中に空白でない文字があり、そのどれもが test(テキストノード, 位置) を満たすか
+  function allSelected(range, target, test) {
     var w = document.createTreeWalker(target, NodeFilter.SHOW_TEXT), n, any = false;
     while ((n = w.nextNode())) {
       if (!range.intersectsNode(n)) continue;
       var s = (n === range.startContainer) ? range.startOffset : 0;
       var e = (n === range.endContainer) ? range.endOffset : n.length;
-      if (!/\S/.test(n.data.slice(s, e))) continue;
-      any = true;
-      if (!inMark(n, target)) return false;
+      for (var i = s; i < e; i++) {
+        if (!/\S/.test(n.data.charAt(i))) continue;
+        any = true;
+        if (!test(n, i)) return false;
+      }
     }
     return any;
+  }
+
+  // 選択範囲の中の文字（空白だけの部分は除く）がすべて <mark> の中にあるか
+  function fullyMarked(range, target) {
+    return allSelected(range, target, function (n) { return inMark(n, target); });
   }
 
   // 選択範囲から <mark> を外す。選択の外にはみ出している部分は <mark> のまま残す。
@@ -697,7 +707,7 @@
   }
 
   function notify(text) {
-    pycmd('ir2:note:' + docid + ':' + para + ':' + encodeURIComponent(text));
+    send('note', text);
   }
 
   function hasBlock(node) {
@@ -850,11 +860,10 @@
     return out;
   }
   // 選択範囲の中の文字（空白だけの部分は除く）がすべて cloze の箇所（マークか、その語のほかの出現）にあれば、
-  // それらの箇所の cloze のマークと、同じ語のほかの cloze のマーク。そうでなければ null。判定は fullyMarked と同じ形
+  // それらの箇所の cloze のマークと、同じ語のほかの cloze のマーク。そうでなければ null（allSelected）
   function clozesInSelection(range, target) {
-    var hits = clozeHits(target), found = [], any = false;
-    var w = document.createTreeWalker(target, NodeFilter.SHOW_TEXT), n;
-    function at(n, i) {
+    var hits = clozeHits(target), found = [];
+    var all = allSelected(range, target, function (n, i) {
       var inAny = false;
       hits.forEach(function (h) {
         if (h.mark.contains(n) || h.ranges.some(function (r) { return r.isPointInRange(n, i) && r.isPointInRange(n, i + 1); })) {
@@ -863,18 +872,8 @@
         }
       });
       return inAny;
-    }
-    while ((n = w.nextNode())) {
-      if (!range.intersectsNode(n)) continue;
-      var s = (n === range.startContainer) ? range.startOffset : 0;
-      var e = (n === range.endContainer) ? range.endOffset : n.length;
-      for (var i = s; i < e; i++) {
-        if (!/\S/.test(n.data.charAt(i))) continue;
-        any = true;
-        if (!at(n, i)) return null;
-      }
-    }
-    if (!any) return null;
+    });
+    if (!all) return null;
     var words = found.map(function (h) { return h.word; });
     return hits.filter(function (h) { return words.indexOf(h.word) >= 0; }).map(function (h) { return h.mark; });
   }
@@ -907,8 +906,7 @@
     if (r !== 'ok') { notify('Cloze failed: ' + r); return; }
     // Python が採番した id を受け取って DOM 側の PENDING も置き換える。
     // 置き換えないと、この後の保存（線を引くなど）で PENDING が文書に戻る。
-    pycmd('ir2:cloze:' + docid + ':' + para + ':' +
-          encodeURIComponent(target.innerHTML), function (id) {
+    send('cloze', target.innerHTML, function (id) {
       var p = target.querySelector('[data-cloze="PENDING"]');
       if (!p) return;
       if (id) { p.setAttribute('data-cloze', id); return; }
@@ -1062,7 +1060,7 @@
     quiz.box.addEventListener('input', function () {
       var fields = {};
       Array.prototype.forEach.call(els, function (el) { fields[el.getAttribute('data-field')] = el.innerHTML; });
-      pycmd('ir2:draft:' + docid + ':' + para + ':' + encodeURIComponent(JSON.stringify({kind: kind, fields: fields})));
+      send('draft', JSON.stringify({kind: kind, fields: fields}));
     });
     quiz.box.addEventListener('paste', onPaste);   // 段落と同じ
     els[0].focus();

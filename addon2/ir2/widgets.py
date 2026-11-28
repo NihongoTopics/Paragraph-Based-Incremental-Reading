@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
 """取り込みダイアログと PBIR メニューの両方が使う部品。"""
 
-import time
-
 from aqt import mw
 from aqt.qt import QAction, QMenu
-
-from . import core
 
 
 def menu_text(name: str) -> str:
@@ -62,14 +58,3 @@ def fill_deck_menu(menu, checked: set, on_pick) -> None:
         if d.name in parents:
             where.addSeparator()
 
-
-def doc_label(col, docid: str) -> str:
-    """重複の警告と PBIR → Check Duplicates で、文書を見分けるための 1 行。
-    取り込んだ日時（DocId は取り込んだ時刻のミリ秒の 16 進。core.new_docid）、デッキ、DocId、原本の最初の見出しか段落。"""
-    try:
-        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(docid, 16) / 1000))
-    except ValueError:
-        when = "?"
-    decks = ", ".join(sorted(col.decks.name(did) for did in core.doc_decks(col, docid)))
-    snippet = core.doc_snippet(col, docid)
-    return f"imported {when} into {decks}, doc {docid}" + (f": {snippet}" if snippet else "")

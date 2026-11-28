@@ -232,10 +232,9 @@ def on_answer_card(_reviewer, card, _ease) -> None:
         if note.note_type()["name"] not in core.IR_MODELS:
             return
         _commit_draft()
-        docid = note["DocId"]
-        if not documents.doc_exists(docid):
+        if not documents.doc_file(note, orig=False):
             return
-        paras, n, marks = core.remove_empty(mw.col, docid)
+        paras, n, marks = core.remove_empty(mw.col, note["DocId"].strip())
     except Exception as e:  # noqa: BLE001
         showWarning(f"PBIR: could not remove empty paragraphs and cards: {e!r}")
         return
@@ -299,22 +298,23 @@ def _sync_menu() -> None:
     _actions["edit_source"].setEnabled(bool(documents.doc_file(note, orig=False)))
 
 
-def _run(cmd: str, arg=None) -> None:
-    """カードの JS の window._ir2Cmd を呼ぶ（段落のカードの JS の準備ができているときだけ）。"""
-    if not _available():
-        return
+def _call(name: str, *args) -> None:
+    """カードの JS の関数 window.<name> を args で呼ぶ（あれば）。"""
     web = mw.reviewer.web
     web.setFocus()  # メニューを閉じたあとキー入力が webview に戻るように
-    web.eval(f"window._ir2Cmd && window._ir2Cmd({json.dumps(cmd)}, {json.dumps(arg)});")
+    web.eval(f"window.{name} && window.{name}({', '.join(map(json.dumps, args))});")
+
+
+def _run(cmd: str, arg=None) -> None:
+    """段落の操作。カードの JS の window._ir2Cmd を呼ぶ（段落のカードの JS の準備ができているときだけ）。"""
+    if _available():
+        _call("_ir2Cmd", cmd, arg)
 
 
 def _go(to: str) -> None:
-    """PBIR → Back と Forward。カードの JS の window._ir2Go を呼ぶ（card.js の setupLinks）。"""
-    if mw.state != "review":
-        return
-    web = mw.reviewer.web
-    web.setFocus()
-    web.eval(f"window._ir2Go && window._ir2Go({json.dumps(to)});")
+    """PBIR → Back と Forward。カードの JS の window._ir2Go を呼ぶ（card.js の setupLinks。どのカードでも）。"""
+    if mw.state == "review":
+        _call("_ir2Go", to)
 
 
 def _toggle_source_text(checked: bool) -> None:

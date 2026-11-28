@@ -29,11 +29,6 @@ def _docid(note) -> str:
     return note["DocId"].strip() if note else ""
 
 
-def doc_exists(docid: str) -> bool:
-    """文書の作業コピーのファイルがあるか。"""
-    return os.path.exists(core.doc_path(mw.col, docid))
-
-
 def source_url(note) -> str:
     """ノートの文書の Source（core.doc_source）。http か https の URL でなければ空文字。"""
     url = core.doc_source(mw.col, _docid(note)) if _docid(note) else ""

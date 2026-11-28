@@ -6,6 +6,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -21,7 +22,7 @@ from aqt.theme import theme_manager
 from aqt.utils import showText, showWarning, tooltip
 
 from . import core
-from .widgets import doc_label, fill_deck_menu, menu_text
+from .widgets import fill_deck_menu, menu_text
 
 
 def _button(text: str, on_click=None) -> QPushButton:
@@ -90,7 +91,6 @@ def _looks_like_url(text: str) -> bool:
 _BLANK = "<!doctype html><html><body></body></html>"
 
 
-_HERE = os.path.dirname(__file__)
 # 取り込みの JS を動かす世界。ページのスクリプトとは別の世界なので、ページから見えず、ページが同じ名前のものを作っても混ざらない
 _WORLD = QWebEngineScript.ScriptWorldId.ApplicationWorld
 
@@ -99,12 +99,8 @@ _WORLD = QWebEngineScript.ScriptWorldId.ApplicationWorld
 def _import_script() -> QWebEngineScript:
     """取り込みの JS。Mozilla Readability 0.6.0（vendor/Readability.js、Apache-2.0。Firefox のリーダービューの処理）と、
     記事を文書の形にする import.js（Pilcrow と同じファイル）。ページに入れておくと、文書を読み込むたびに _WORLD で動く。"""
-    src = ""
-    for name in ("vendor/Readability.js", "import.js"):
-        with open(os.path.join(_HERE, name), encoding="utf-8") as f:
-            src += f.read() + "\n"
     script = QWebEngineScript()
-    script.setSourceCode(src)
+    script.setSourceCode(core.asset("vendor/Readability.js") + "\n" + core.asset("import.js"))
     script.setWorldId(_WORLD)
     script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
     return script
@@ -398,7 +394,7 @@ class ImportDialog(QDialog):
         self._fetching = url
 
         def task() -> tuple:
-            return core.article_html(fetch_url(url), urlparse(url).path)
+            return fetch_url(url)
 
         def on_done(fut) -> None:
             if self._closed or seq != self._from_url.seq:
@@ -429,7 +425,7 @@ class ImportDialog(QDialog):
 
     def _prepare(self, src: _Article, text: str, kind: str, url: str) -> None:
         """src（URL かファイル）の取り込む文書を import.js の irImport で作り、src.prepared か src.error に入れる。
-        kind は core.article_html の種類で、html なら Readability で本文を取り出す。URL の HTML は、ページのスクリプトを
+        kind は core.read_article の種類で、html なら Readability で本文を取り出す。URL の HTML は、ページのスクリプトを
         動かしてから読む（_WebArticle）。作り終わる前に src の元が替わっていたら（seq が違う）、結果を捨てる。
         ファイルなら重複の警告も出す。"""
         seq = src.seq
@@ -470,7 +466,8 @@ class ImportDialog(QDialog):
     def _set_file(self, path: str) -> None:
         """path を取り込むファイルにする。Choose File ... とドロップの両方から。"""
         try:
-            text, kind = core.read_article_file(path)
+            with open(path, "rb") as f:
+                text, kind = core.read_article(f.read(), path)
         except Exception as e:  # noqa: BLE001
             showWarning(f"PBIR: could not read the file: {e!r}", parent=self)
             return
@@ -688,14 +685,12 @@ def _request(url: str, referer: str = "") -> Request:
     return Request(ascii_url(url), headers=headers)
 
 
-def fetch_url(url: str) -> str:
-    """URL を読み、文字列にする。文字コードの決め方は core.decode_text（ファイルと同じ）。"""
+def fetch_url(url: str) -> tuple:
+    """URL を読む。戻り値は core.read_article と同じ (文字列, 種類) で、読み方もファイルと同じ。サーバーの言う平文
+    （text/plain）は、拡張子と同じく平文。"""
     with urlopen(_request(url), timeout=30) as r:
-        ctype = (r.headers.get_content_type() or "").lower()
-        data = r.read()
-        # 平文（種類か拡張子で。ファイルと同じく拡張子でも決める）では <meta> を探さない
-        is_html = ctype != "text/plain" and not urlparse(url).path.lower().endswith(core.PLAIN_TEXT_EXTS)
-        return core.decode_text(data, is_html=is_html, http_charset=r.headers.get_content_charset())
+        return core.read_article(r.read(), urlparse(url).path, plain=r.headers.get_content_type().lower() == "text/plain",
+                                 http_charset=r.headers.get_content_charset())
 
 
 def fetch_images(urls: list, referer: str) -> dict:
@@ -739,6 +734,18 @@ def image_info(data: bytes) -> tuple:
     if reader.transformation() & QImageIOHandler.Transformation.TransformationRotate90:
         w, h = h, w
     return fmt, (w, h)
+
+
+def doc_label(col, docid: str) -> str:
+    """重複の警告と PBIR → Check Duplicates で、文書を見分けるための 1 行。
+    取り込んだ日時（DocId は取り込んだ時刻のミリ秒の 16 進。core.new_docid）、デッキ、DocId、原本の最初の見出しか段落。"""
+    try:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(docid, 16) / 1000))
+    except ValueError:
+        when = "?"
+    decks = ", ".join(sorted(col.decks.name(did) for did in core.doc_decks(col, docid)))
+    snippet = core.doc_snippet(col, docid)
+    return f"imported {when} into {decks}, doc {docid}" + (f": {snippet}" if snippet else "")
 
 
 def on_import() -> None:

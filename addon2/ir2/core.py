@@ -430,23 +430,18 @@ def decode_text(data: bytes, is_html: bool, http_charset: str = None) -> str:
 PLAIN_TEXT_EXTS = (".txt", ".text", ".md", ".markdown")
 
 
-def article_html(text: str, name: str) -> tuple:
-    """取り込む文字列と、その種類（import.js の irImport の kind）。name はファイル名か URL のパス。戻り値は (文字列, 種類)。
+def read_article(data: bytes, name: str, plain: bool = False, http_charset: str = None) -> tuple:
+    """取り込むファイルかページのバイト列を読む。name はファイル名か URL のパス。plain はサーバーが平文（text/plain）と
+    言ったページ。戻り値は (文字列, 種類)。種類は import.js の irImport の kind。
 
-    平文の拡張子（Markdown を含む）か、< を含まない文字列なら text（irImport が空行で段落に分ける）、それ以外は html（irImport が
-    Readability で本文を取り出す）。URL とファイルの両方がこれを使う。Pilcrow も同じ決め方（DocumentImport.swift の kind）。
+    平文の拡張子（Markdown を含む）か plain のものと、< を含まない文字列は text（irImport が空行で段落に分ける）。
+    平文の文字コードは <meta> から探さない（decode_text）。それ以外は html（irImport が Readability で本文を取り出す）。
+    ブラウザも text/plain のページを文字のまま出す。URL とファイルの両方がこれを使う。Pilcrow も同じ読み方
+    （DocumentImport.swift の read）。
     """
-    if name.lower().endswith(PLAIN_TEXT_EXTS) or "<" not in text:
-        return text, "text"
-    return text, "html"
-
-
-def read_article_file(path: str) -> tuple:
-    """取り込むファイルを読む。戻り値は article_html と同じ。平文では <meta> の文字コードを探さない。"""
-    with open(path, "rb") as f:
-        data = f.read()
-    is_html = not path.lower().endswith(PLAIN_TEXT_EXTS)
-    return article_html(decode_text(data, is_html=is_html), path)
+    plain = plain or name.lower().endswith(PLAIN_TEXT_EXTS)
+    text = decode_text(data, is_html=not plain, http_charset=http_charset)
+    return text, "text" if plain or "<" not in text else "html"
 
 
 _PREVIEW_CSS = """
@@ -544,10 +539,11 @@ def _set_template(m: dict, spec: _ModelSpec) -> bool:
 
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_assets: dict = {}   # card.css と card.js の中身（Anki を閉じるまで覚えておく）
+_assets: dict = {}
 
 
-def _asset(name: str) -> str:
+def asset(name: str) -> str:
+    """アドオンのフォルダのファイルの中身（Anki を閉じるまで覚えておく）。"""
     if name not in _assets:
         with open(os.path.join(_HERE, name), encoding="utf-8") as f:
             _assets[name] = f.read()
@@ -556,7 +552,7 @@ def _asset(name: str) -> str:
 
 def _css() -> str:
     """カードの CSS（card.css）。ノートタイプの CSS と、取り込みのプレビューに使う。"""
-    return _asset("card.css")
+    return asset("card.css")
 
 
 def _doc_js() -> str:
@@ -566,7 +562,7 @@ def _doc_js() -> str:
     quiz の種類（QUIZ）。JS はテンプレートにそのまま入るので、Anki のテンプレート記法の開き括弧 2 個を含んではいけない
     （card.js の先頭の注意）。含んでいれば ValueError。
     """
-    js = _asset("card.js")
+    js = asset("card.js")
     for name, val in (("BLOCK_TAGS", sorted(BLOCK_TAGS)), ("MEDIA_TAGS", sorted(MEDIA_TAGS)),
                       ("UNSAFE_TAGS", UNSAFE_TAGS), ("QUIZ_KINDS", list(QUIZ))):
         js = js.replace(f"__{name}__", json.dumps(val))
@@ -899,11 +895,14 @@ def _cloze_notes(col: Collection, docid: str, para: str) -> dict:
             if note["AnchorId"].split(".")[0] == para}
 
 
-def next_cloze_id(col: Collection, docid: str, anchor: str, soup=None) -> str:
-    """その段落で未使用の cloze ID を返す。文書側のマークと既存ノートの両方を見る。soup は文書（渡さなければ読む）。"""
-    used = set(_cloze_ids(soup if soup is not None else doc_soup(col, docid)))
-    used.update(note["AnchorId"] for note in _doc_notes(col, docid, (CLOZE_MODEL,)))
-    n = 1
+def _used_clozes(col: Collection, docid: str, anchor: str, soup) -> set:
+    """段落 anchor の cloze の ID のうち、文書 soup のマークかノートが使っているもの。"""
+    return {i for i in _cloze_ids(soup) if i.split(".")[0] == anchor} | set(_cloze_notes(col, docid, anchor))
+
+
+def next_cloze_id(col: Collection, docid: str, anchor: str, soup) -> str:
+    """その段落で未使用の cloze ID（_used_clozes にない最小の番号）。soup は文書。"""
+    used, n = _used_clozes(col, docid, anchor, soup), 1
     while f"{anchor}.c{n}" in used:
         n += 1
     return f"{anchor}.c{n}"
@@ -1318,9 +1317,8 @@ def merge_paragraph(col: Collection, docid: str, anchor: str, direction: str) ->
         raise Refused(f"there is no paragraph right {where} this one with nothing in between")
     other_id = other["data-ir"]
 
-    # 番号は、anchor の cloze のマークとノートのどちらでも使われていないもの（next_cloze_id と同じ）
-    used = set(_cloze_ids(el)) | set(_cloze_notes(col, docid, anchor))
-    moved = _renumber_clozes(other, anchor, max(map(_cloze_num, used), default=0))
+    # 番号は、anchor の cloze のマークとノートのどれよりも後のもの（_used_clozes）
+    moved = _renumber_clozes(other, anchor, max(map(_cloze_num, _used_clozes(col, docid, anchor, soup)), default=0))
 
     for x in (el, other):
         if not _has_content(x):
